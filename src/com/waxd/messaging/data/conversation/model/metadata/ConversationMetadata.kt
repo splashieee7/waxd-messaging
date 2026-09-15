@@ -1,0 +1,19 @@
+package com.waxd.messaging.data.conversation.model.metadata
+
+import com.waxd.messaging.data.conversation.model.ParticipantId
+
+internal data class ConversationMetadata(
+    val conversationName: String,
+    val selfParticipantId: ParticipantId?,
+    val isGroupConversation: Boolean,
+    val includeEmailAddress: Boolean,
+    val participantCount: Int,
+    val otherParticipantDisplayDestination: String?,
+    val otherParticipantNormalizedDestination: String?,
+    val otherParticipantContactLookupKey: String?,
+    val otherParticipantPhotoUri: String?,
+    val isArchived: Boolean,
+    val isBlocked: Boolean,
+    val composerAvailability: ConversationComposerAvailability,
+    val sortTimestamp: Long,
+)

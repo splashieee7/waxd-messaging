@@ -1,0 +1,151 @@
+package com.waxd.messaging.ui.blockedparticipants.screen
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.domain.conversation.usecase.participant.ResolveContactAction
+import com.waxd.messaging.domain.conversation.usecase.participant.model.ResolveContactActionResult
+import com.waxd.messaging.ui.blockedparticipants.screen.delegate.BlockedParticipantsDelegate
+import com.waxd.messaging.ui.blockedparticipants.screen.model.BlockedParticipantUiState
+import com.waxd.messaging.ui.blockedparticipants.screen.model.BlockedParticipantsAction as Action
+import com.waxd.messaging.ui.blockedparticipants.screen.model.BlockedParticipantsNavEvent as NavEvent
+import com.waxd.messaging.ui.blockedparticipants.screen.model.BlockedParticipantsScreenEffect as Effect
+import com.waxd.messaging.ui.blockedparticipants.screen.model.BlockedParticipantsUiState as State
+import com.waxd.messaging.ui.contact.model.AddContactRequest
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+internal interface BlockedParticipantsScreenModel {
+    val effects: Flow<Effect>
+    val navigationEvents: Flow<NavEvent>
+    val uiState: StateFlow<State>
+
+    fun onAction(action: Action)
+}
+
+@HiltViewModel
+internal class BlockedParticipantsViewModel @Inject constructor(
+    private val delegate: BlockedParticipantsDelegate,
+    private val resolveContactAction: ResolveContactAction,
+) : ViewModel(),
+    BlockedParticipantsScreenModel {
+
+    private val _effects = MutableSharedFlow<Effect>(extraBufferCapacity = 1)
+    override val effects: Flow<Effect> = _effects.asSharedFlow()
+
+    private val _navigationEvents = MutableSharedFlow<NavEvent>(extraBufferCapacity = 1)
+    override val navigationEvents: Flow<NavEvent> = _navigationEvents.asSharedFlow()
+
+    override val uiState: StateFlow<State> = delegate.state
+
+    init {
+        delegate.bind(viewModelScope)
+    }
+
+    override fun onAction(action: Action) {
+        when (action) {
+            is Action.UnblockClicked -> {
+                handleUnblockClicked(action.normalizedDestination)
+            }
+
+            is Action.ParticipantClicked -> {
+                handleParticipantClicked(action.participantId)
+            }
+
+            is Action.ParticipantLongClicked -> {
+                delegate.toggleSelection(action.participantId)
+            }
+
+            is Action.ParticipantMessageClicked -> {
+                emitNavigationEvent(NavEvent.OpenParticipantChat(action.conversationId))
+            }
+
+            is Action.ParticipantCallClicked -> {
+                emitEffect(Effect.PlacePhoneCall(action.destination))
+            }
+
+            is Action.ParticipantContactInfoClicked -> {
+                emitContactAction(participant = action.participant)
+            }
+
+            Action.DeleteSelectedConfirmed -> {
+                delegate.deleteSelectedChats()
+            }
+
+            Action.ClearSelectionClicked -> {
+                delegate.clearSelection()
+            }
+        }
+    }
+
+    private fun handleUnblockClicked(normalizedDestination: String) {
+        if (normalizedDestination.isEmpty()) return
+
+        val wasLast = uiState.value.participants.size == 1
+        delegate.unblock(normalizedDestination)
+
+        if (wasLast) {
+            emitNavigationEvent(NavEvent.CloseAfterLastUnblock)
+        }
+    }
+
+    private fun handleParticipantClicked(participantId: ParticipantId) {
+        val state = uiState.value
+
+        if (state.selectedParticipantIds.isNotEmpty()) {
+            delegate.toggleSelection(participantId)
+            return
+        }
+
+        val conversationId = state.participants
+            .firstOrNull { it.participantId == participantId }
+            ?.conversationId
+            ?: return
+
+        emitNavigationEvent(NavEvent.OpenParticipantChat(conversationId))
+    }
+
+    private fun emitContactAction(participant: BlockedParticipantUiState) {
+        val contactAction = resolveContactAction(
+            contactId = participant.contactId,
+            lookupKey = participant.lookupKey,
+            destination = participant.normalizedDestination,
+        )
+
+        when (contactAction) {
+            is ResolveContactActionResult.ShowContactCard -> {
+                emitEffect(
+                    Effect.ShowContactCard(
+                        contactId = contactAction.contactId,
+                        contactLookupKey = contactAction.lookupKey,
+                    ),
+                )
+            }
+
+            is ResolveContactActionResult.AddContact -> {
+                emitEffect(
+                    Effect.AddContact(
+                        request = AddContactRequest(
+                            destination = contactAction.destination,
+                            avatarUri = participant.avatarUri,
+                        ),
+                    ),
+                )
+            }
+
+            ResolveContactActionResult.Unavailable -> Unit
+        }
+    }
+
+    private fun emitEffect(effect: Effect) {
+        _effects.tryEmit(effect)
+    }
+
+    private fun emitNavigationEvent(event: NavEvent) {
+        _navigationEvents.tryEmit(event)
+    }
+}

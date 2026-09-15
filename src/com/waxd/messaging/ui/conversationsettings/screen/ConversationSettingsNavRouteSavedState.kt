@@ -1,0 +1,55 @@
+package com.waxd.messaging.ui.conversationsettings.screen
+
+import android.os.Parcelable
+import androidx.compose.runtime.saveable.Saver
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.ui.conversationsettings.screen.model.ConversationSettingsNavRoute
+import kotlinx.parcelize.Parcelize
+
+internal sealed interface ConversationSettingsNavRouteSavedState : Parcelable {
+
+    @Parcelize
+    data object Conversation : ConversationSettingsNavRouteSavedState
+
+    @Parcelize
+    data class ParticipantInfo(
+        val conversationId: String,
+    ) : ConversationSettingsNavRouteSavedState
+
+    companion object {
+        val Saver: Saver<ConversationSettingsNavRoute, ConversationSettingsNavRouteSavedState> =
+            Saver(
+                save = { route -> route.toSavedState() },
+                restore = { savedState -> savedState.toRoute() },
+            )
+    }
+}
+
+private fun ConversationSettingsNavRoute.toSavedState(): ConversationSettingsNavRouteSavedState {
+    return when (this) {
+        ConversationSettingsNavRoute.Conversation -> {
+            ConversationSettingsNavRouteSavedState.Conversation
+        }
+
+        is ConversationSettingsNavRoute.ParticipantInfo -> {
+            ConversationSettingsNavRouteSavedState.ParticipantInfo(
+                conversationId = conversationId.value,
+            )
+        }
+    }
+}
+
+private fun ConversationSettingsNavRouteSavedState.toRoute(): ConversationSettingsNavRoute {
+    return when (this) {
+        ConversationSettingsNavRouteSavedState.Conversation -> {
+            ConversationSettingsNavRoute.Conversation
+        }
+
+        is ConversationSettingsNavRouteSavedState.ParticipantInfo -> {
+            ConversationId
+                .fromOrNull(conversationId)
+                ?.let(ConversationSettingsNavRoute::ParticipantInfo)
+                ?: ConversationSettingsNavRoute.Conversation
+        }
+    }
+}

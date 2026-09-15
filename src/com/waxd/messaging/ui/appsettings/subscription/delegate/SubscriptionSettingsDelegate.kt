@@ -1,0 +1,146 @@
+package com.waxd.messaging.ui.appsettings.subscription.delegate
+
+import com.waxd.messaging.data.subscription.model.SubId
+import com.waxd.messaging.data.subscriptionsettings.model.SubscriptionBooleanPref
+import com.waxd.messaging.data.subscriptionsettings.repository.SubscriptionSettingsRepository
+import com.waxd.messaging.domain.subscriptionsettings.usecase.SetSubscriptionPhoneNumber
+import com.waxd.messaging.ui.appsettings.common.SettingsScreenDelegate
+import com.waxd.messaging.ui.appsettings.subscription.mapper.SubscriptionSettingsUiStateMapper
+import com.waxd.messaging.ui.appsettings.subscription.model.SubscriptionSettingsUiState
+import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.launch
+
+internal interface SubscriptionSettingsDelegate :
+    SettingsScreenDelegate<SubscriptionSettingsUiState> {
+    fun onAutoRetrieveMmsChanged(subId: SubId, enabled: Boolean)
+    fun onAutoRetrieveMmsWhenRoamingChanged(subId: SubId, enabled: Boolean)
+    fun onDeliveryReportsChanged(subId: SubId, enabled: Boolean)
+    fun onGroupMmsChanged(subId: SubId, enabled: Boolean)
+    fun onPhoneNumberChanged(subId: SubId, phoneNumber: String)
+}
+
+internal class SubscriptionSettingsDelegateImpl @Inject constructor(
+    private val repository: SubscriptionSettingsRepository,
+    private val setSubscriptionPhoneNumber: SetSubscriptionPhoneNumber,
+    private val mapper: SubscriptionSettingsUiStateMapper,
+) : SubscriptionSettingsDelegate {
+
+    private val _state = MutableStateFlow(
+        SubscriptionSettingsUiState(
+            isMultiSim = repository.isMultiSim(),
+        ),
+    )
+    override val state: StateFlow<SubscriptionSettingsUiState> = _state.asStateFlow()
+
+    private val refreshTriggers: Channel<Unit> = Channel(Channel.CONFLATED)
+
+    private var boundScope: CoroutineScope? = null
+
+    override fun bind(scope: CoroutineScope) {
+        if (boundScope != null) {
+            return
+        }
+
+        boundScope = scope
+
+        scope.launch {
+            merge(
+                repository.observeSubscriptionsChanged(),
+                refreshTriggers.receiveAsFlow(),
+            )
+                .onStart { emit(Unit) }
+                .conflate()
+                .map {
+                    val data = repository.getSubscriptionSettings()
+                    mapper.map(data)
+                }
+                .collect { _state.value = it }
+        }
+    }
+
+    override fun refresh() {
+        refreshTriggers.trySend(Unit)
+    }
+
+    override fun onAutoRetrieveMmsChanged(
+        subId: SubId,
+        enabled: Boolean,
+    ) {
+        setBooleanPref(
+            subId = subId,
+            pref = SubscriptionBooleanPref.AUTO_RETRIEVE_MMS,
+            enabled = enabled,
+        )
+    }
+
+    override fun onAutoRetrieveMmsWhenRoamingChanged(
+        subId: SubId,
+        enabled: Boolean,
+    ) {
+        setBooleanPref(
+            subId = subId,
+            pref = SubscriptionBooleanPref.AUTO_RETRIEVE_MMS_WHEN_ROAMING,
+            enabled = enabled,
+        )
+    }
+
+    override fun onDeliveryReportsChanged(
+        subId: SubId,
+        enabled: Boolean,
+    ) {
+        setBooleanPref(
+            subId = subId,
+            pref = SubscriptionBooleanPref.DELIVERY_REPORTS,
+            enabled = enabled,
+        )
+    }
+
+    override fun onGroupMmsChanged(
+        subId: SubId,
+        enabled: Boolean,
+    ) {
+        setBooleanPref(
+            subId = subId,
+            pref = SubscriptionBooleanPref.GROUP_MMS,
+            enabled = enabled,
+        )
+    }
+
+    override fun onPhoneNumberChanged(
+        subId: SubId,
+        phoneNumber: String,
+    ) {
+        boundScope?.launch {
+            setSubscriptionPhoneNumber(
+                subId = subId,
+                phoneNumber = phoneNumber,
+            )
+            refresh()
+        }
+    }
+
+    private fun setBooleanPref(
+        subId: SubId,
+        pref: SubscriptionBooleanPref,
+        enabled: Boolean,
+    ) {
+        boundScope?.launch {
+            repository.setSubscriptionBooleanPref(
+                subId = subId,
+                pref = pref,
+                enabled = enabled,
+            )
+            refresh()
+        }
+    }
+}

@@ -1,0 +1,93 @@
+package com.waxd.messaging.datamodel;
+
+import android.content.Context;
+import android.database.sqlite.SQLiteDatabase;
+
+import com.waxd.messaging.datamodel.action.ActionService;
+import com.waxd.messaging.datamodel.action.BackgroundWorker;
+import com.waxd.messaging.datamodel.data.ConversationData;
+import com.waxd.messaging.datamodel.data.ConversationListData;
+import com.waxd.messaging.datamodel.data.DraftMessageData;
+import com.waxd.messaging.datamodel.data.GalleryGridItemData;
+import com.waxd.messaging.datamodel.data.LaunchConversationData;
+import com.waxd.messaging.datamodel.data.MediaPickerData;
+import com.waxd.messaging.util.Assert;
+
+public class ActionSyncTestDataModel extends DataModel {
+    private DatabaseWrapper mDatabase;
+    private final SyncManager mSyncManager = new SyncManager();
+    private final ActionService mActionService = new ActionService();
+    private final BackgroundWorker mBackgroundWorker = new BackgroundWorker();
+
+    public void setDatabase(final DatabaseWrapper database) {
+        mDatabase = database;
+    }
+
+    @Override
+    public ConversationListData createConversationListData(final Context context,
+            final ConversationListData.ConversationListDataListener listener,
+            final boolean archivedMode) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ConversationData createConversationData(final Context context,
+            final ConversationData.ConversationDataListener listener,
+            final String conversationId) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public MediaPickerData createMediaPickerData(final Context context) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public GalleryGridItemData createGalleryGridItemData() {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public LaunchConversationData createLaunchConversationData(
+            final LaunchConversationData.LaunchConversationDataListener listener) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public DraftMessageData createDraftMessageData(final String conversationId) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ActionService getActionService() {
+        return mActionService;
+    }
+
+    @Override
+    public BackgroundWorker getBackgroundWorkerForActionService() {
+        return mBackgroundWorker;
+    }
+
+    @Override
+    public DatabaseWrapper getDatabase() {
+        Assert.isNotMainThread();
+        return mDatabase;
+    }
+
+    @Override
+    public void onActivityResume() {
+    }
+
+    @Override
+    void onCreateTables(final SQLiteDatabase db) {
+    }
+
+    @Override
+    public void onApplicationCreated() {
+    }
+
+    @Override
+    public SyncManager getSyncManager() {
+        return mSyncManager;
+    }
+}

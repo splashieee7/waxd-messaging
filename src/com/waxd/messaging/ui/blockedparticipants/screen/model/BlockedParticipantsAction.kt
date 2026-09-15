@@ -1,0 +1,35 @@
+package com.waxd.messaging.ui.blockedparticipants.screen.model
+
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.ParticipantId
+
+internal sealed interface BlockedParticipantsAction {
+
+    data class UnblockClicked(
+        val normalizedDestination: String,
+    ) : BlockedParticipantsAction
+
+    data class ParticipantClicked(
+        val participantId: ParticipantId,
+    ) : BlockedParticipantsAction
+
+    data class ParticipantLongClicked(
+        val participantId: ParticipantId,
+    ) : BlockedParticipantsAction
+
+    data class ParticipantMessageClicked(
+        val conversationId: ConversationId,
+    ) : BlockedParticipantsAction
+
+    data class ParticipantCallClicked(
+        val destination: String,
+    ) : BlockedParticipantsAction
+
+    data class ParticipantContactInfoClicked(
+        val participant: BlockedParticipantUiState,
+    ) : BlockedParticipantsAction
+
+    data object DeleteSelectedConfirmed : BlockedParticipantsAction
+
+    data object ClearSelectionClicked : BlockedParticipantsAction
+}

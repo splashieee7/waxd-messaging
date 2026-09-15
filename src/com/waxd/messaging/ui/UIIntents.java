@@ -1,0 +1,239 @@
+/*
+ * Copyright (C) 2015 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.waxd.messaging.ui;
+
+import android.app.PendingIntent;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.Point;
+import android.net.Uri;
+import android.os.Bundle;
+
+import com.waxd.messaging.Factory;
+import com.waxd.messaging.datamodel.data.MessageData;
+import com.waxd.messaging.util.ConversationIdSet;
+
+/**
+ * A central repository of Intents used to start activities.
+ */
+public abstract class UIIntents {
+    public static UIIntents get() {
+        return Factory.get().getUIIntents();
+    }
+
+    // Intent extras
+    public static final String UI_INTENT_EXTRA_CONVERSATION_ID = "conversation_id";
+
+    // Sending draft data (from share intent / message forwarding) to the ConversationActivity.
+    public static final String UI_INTENT_EXTRA_DRAFT_DATA = "draft_data";
+
+    // Indicates what type of notification this applies to (See BugleNotifications:
+    // UPDATE_NONE, UPDATE_MESSAGES, UPDATE_ERRORS, UPDATE_ALL)
+    public static final String UI_INTENT_EXTRA_NOTIFICATIONS_UPDATE = "notifications_update";
+
+    // Pass a set of conversation id's.
+    public static final String UI_INTENT_EXTRA_CONVERSATION_ID_SET = "conversation_id_set";
+
+    // Sending class zero message to its activity
+    public static final String UI_INTENT_EXTRA_MESSAGE_VALUES = "message_values";
+
+    // For the widget to go to the ConversationList from the Conversation.
+    public static final String UI_INTENT_EXTRA_GOTO_CONVERSATION_LIST = "goto_conv_list";
+
+    // For the widget to start composing a new conversation.
+    public static final String UI_INTENT_EXTRA_COMPOSE_NEW_CONVERSATION = "compose_new_conv";
+
+    // Indicates whether a conversation is launched with custom transition.
+    public static final String UI_INTENT_EXTRA_WITH_CUSTOM_TRANSITION = "with_custom_transition";
+
+    public static final String ACTION_RESET_NOTIFICATIONS =
+            "com.waxd.messaging.reset_notifications";
+
+    public static final String CMAS_COMPONENT = "com.android.cellbroadcastreceiver.module";
+
+    // Sending attachment uri from widget
+    public static final String UI_INTENT_EXTRA_ATTACHMENT_URI = "attachment_uri";
+
+    // Sending attachment content type from widget
+    public static final String UI_INTENT_EXTRA_ATTACHMENT_TYPE = "attachment_type";
+
+    public static final String ACTION_WIDGET_CONVERSATION =
+            "com.waxd.messaging.widget_conversation:";
+
+    public static final String UI_INTENT_EXTRA_REQUIRES_MMS = "requires_mms";
+
+    public static final String UI_INTENT_EXTRA_SELF_ID = "self_id";
+
+    // Message position to scroll to.
+    public static final String UI_INTENT_EXTRA_MESSAGE_POSITION = "message_position";
+
+    public static final String ACTION_MESSAGE_READ = "com.waxd.messaging.action.MESSAGE_READ";
+
+    public abstract void launchConversationListActivity(final Context context);
+
+    /**
+     * Launch an activity to show a conversation. This method by default provides no additional
+     * activity options.
+     */
+    public void launchConversationActivity(final Context context,
+            final String conversationId, final MessageData draft) {
+        launchConversationActivity(context, conversationId, draft, null,
+                false /* withCustomTransition */);
+    }
+
+    /**
+     * Launch an activity to show a conversation.
+     */
+    public abstract void launchConversationActivity(final Context context,
+            final String conversationId, final MessageData draft, final Bundle activityOptions,
+            final boolean withCustomTransition);
+
+
+    /**
+     * Launch an activity to show conversation with conversation list in back stack.
+     */
+    public abstract void launchConversationActivityWithParentStack(Context context,
+            String conversationId, String smsBody);
+
+    /**
+     * Launch debug activity to set MMS config options.
+     */
+    public abstract void launchDebugMmsConfigActivity(final Context context);
+
+    /**
+     * Launch an external activity to handle a phone call
+     * @param phoneNumber the phone number to call
+     * @param clickPosition is the location tapped to start this launch for transition use
+     */
+    public abstract void launchPhoneCallActivity(final Context context, final String phoneNumber,
+                                                 final Point clickPosition);
+
+    /**
+     * Launch an activity to show a class zero message
+     */
+    public abstract void launchClassZeroActivity(Context context, ContentValues messageValues);
+
+    /**
+     * Launch an external activity that handles the intent to add VCard to contacts
+     */
+    public abstract void launchSaveVCardToContactsActivity(Context context, Uri vcardUri);
+
+    /**
+     * Launch full screen video viewer.
+     */
+    public abstract void launchFullScreenVideoViewer(Context context, Uri videoUri);
+
+    /**
+     * Get an intent to launch the wireless alert viewer.
+     */
+    public abstract Intent getWirelessAlertsIntent();
+
+    /**
+     * Get a PendingIntent for starting conversation list from notifications.
+     */
+    public abstract PendingIntent getPendingIntentForConversationListActivity(
+            final Context context);
+
+    /**
+     * Get a PendingIntent for starting conversation list from widget.
+     */
+    public abstract PendingIntent getWidgetPendingIntentForConversationListActivity(
+            final Context context);
+
+    /**
+     * Get a PendingIntent for showing a conversation from notifications.
+     */
+    public abstract PendingIntent getPendingIntentForConversationActivity(final Context context,
+            final String conversationId, final MessageData draft);
+
+    /**
+     * Get an Intent for showing a conversation from notification bubble or shortcut.
+     */
+    public abstract Intent getShortcutIntentForConversationActivity(
+            final Context context, final String conversationId);
+
+    /**
+     * Get an Intent for showing a conversation from the widget.
+     */
+    public abstract Intent getIntentForConversationActivity(final Context context,
+            final String conversationId, final MessageData draft);
+
+    /**
+     * Get a PendingIntent for sending a message to a conversation, without opening the Bugle UI.
+     *
+     * <p>This is intended to be used by the Android Wear companion app when sending transcribed
+     * voice replies.
+     */
+    public abstract PendingIntent getPendingIntentForSendingMessageToConversation(
+            final Context context, final String conversationId, final String selfId,
+            final boolean requiresMms, final int requestCode);
+
+    /**
+     * Get a PendingIntent for clearing notifications.
+     *
+     * <p>This is intended to be used by notifications.
+     */
+    public abstract PendingIntent getPendingIntentForClearingNotifications(final Context context,
+            final int updateTargets, final ConversationIdSet conversationIdSet,
+            final int requestCode);
+
+    /**
+     * Get a PendingIntent for showing low storage notifications.
+     */
+    public abstract PendingIntent getPendingIntentForLowStorageNotifications(final Context context);
+
+    /**
+     * Get a PendingIntent for showing a new message to a secondary user.
+     */
+    public abstract PendingIntent getPendingIntentForSecondaryUserNewMessageNotification(
+            final Context context);
+
+    /**
+     * Get an intent for the LaunchConversationActivity.
+     */
+    public abstract Intent getLaunchConversationActivityIntent(final Context context);
+
+    /**
+     * Launch to browser for a url.
+     */
+    public abstract void launchBrowserForUrl(final Context context, final String url);
+
+    /**
+     * Get a PendingIntent for the widget conversation template.
+     */
+    public abstract PendingIntent getWidgetPendingIntentForConversationActivity(
+            final Context context, final String conversationId, final int requestCode);
+
+    /**
+     * Get a PendingIntent for the widget compose button.
+     */
+    public abstract PendingIntent getWidgetPendingIntentForNewConversation(
+            final Context context, final int requestCode);
+
+    /**
+     * Get a PendingIntent for the conversation widget configuration activity template.
+     */
+    public abstract PendingIntent getWidgetPendingIntentForConfigurationActivity(
+            final Context context, final int appWidgetId);
+
+    /**
+     * Get a PendingIntent for marking a conversation as read.
+     */
+    public abstract PendingIntent getPendingIntentForMarkingAsRead(
+            final Context context, final String conversationId);
+
+}

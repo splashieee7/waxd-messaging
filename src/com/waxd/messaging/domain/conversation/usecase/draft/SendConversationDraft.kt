@@ -1,0 +1,306 @@
+package com.waxd.messaging.domain.conversation.usecase.draft
+
+import com.waxd.messaging.data.conversation.mapper.ConversationDraftMessageDataMapper
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.draft.ConversationDraft
+import com.waxd.messaging.data.conversation.model.draft.ConversationDraftAttachment
+import com.waxd.messaging.data.conversation.model.send.ConversationSendData
+import com.waxd.messaging.data.conversation.repository.ConversationsRepository
+import com.waxd.messaging.data.subscription.model.SubId
+import com.waxd.messaging.data.subscription.repository.SubscriptionsRepository
+import com.waxd.messaging.datamodel.action.InsertNewMessageAction
+import com.waxd.messaging.datamodel.data.MessageData
+import com.waxd.messaging.datamodel.data.ParticipantData
+import com.waxd.messaging.di.core.IoDispatcher
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.BlankConversationIdException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.ConversationRecipientsNotLoadedException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.ConversationSimNotReadyException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.DraftDispatchFailedException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.EmptyConversationDraftException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.MessageLimitExceededException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.MissingSelfPhoneNumberForGroupMmsException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.SendConversationDraftException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.TooManyVideoAttachmentsException
+import com.waxd.messaging.domain.conversation.usecase.draft.exception.UnknownConversationRecipientException
+import com.waxd.messaging.domain.conversation.usecase.draft.model.ConversationDraftSendProtocol
+import com.waxd.messaging.sms.MmsConfig
+import com.waxd.messaging.sms.MmsUtils
+import com.waxd.messaging.util.ContentType
+import com.waxd.messaging.util.PhoneUtils
+import com.waxd.messaging.util.core.extension.unitFlow
+import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
+
+internal interface SendConversationDraft {
+    operator fun invoke(
+        conversationId: ConversationId,
+        draft: ConversationDraft,
+        ignoreMessageSizeLimit: Boolean = false,
+    ): Flow<Unit>
+}
+
+internal class SendConversationDraftImpl @Inject constructor(
+    private val conversationsRepository: ConversationsRepository,
+    private val subscriptionsRepository: SubscriptionsRepository,
+    private val getConversationDraftSendProtocol: GetConversationDraftSendProtocol,
+    private val conversationDraftMessageDataMapper: ConversationDraftMessageDataMapper,
+    @param:IoDispatcher
+    private val ioDispatcher: CoroutineDispatcher,
+) : SendConversationDraft {
+
+    @Suppress("TooGenericExceptionCaught")
+    override operator fun invoke(
+        conversationId: ConversationId,
+        draft: ConversationDraft,
+        ignoreMessageSizeLimit: Boolean,
+    ): Flow<Unit> {
+        return unitFlow {
+            try {
+                validateAndSendDraft(
+                    conversationId = conversationId,
+                    draft = draft,
+                    ignoreMessageSizeLimit = ignoreMessageSizeLimit,
+                )
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                throw exception.toSendConversationDraftException(
+                    conversationId = conversationId,
+                )
+            }
+        }.flowOn(ioDispatcher)
+    }
+
+    private fun Exception.toSendConversationDraftException(
+        conversationId: ConversationId,
+    ): SendConversationDraftException {
+        return when (this) {
+            is SendConversationDraftException -> this
+
+            else -> {
+                DraftDispatchFailedException(
+                    conversationId = conversationId,
+                    cause = this,
+                )
+            }
+        }
+    }
+
+    private suspend fun validateAndSendDraft(
+        conversationId: ConversationId,
+        draft: ConversationDraft,
+        ignoreMessageSizeLimit: Boolean,
+    ) {
+        validateDraftBasics(
+            conversationId = conversationId,
+            draft = draft,
+        )
+
+        val sendData = conversationsRepository.getConversationSendData(
+            conversationId = conversationId,
+            requestedSelfParticipantId = draft.selfParticipantId,
+        ) ?: throw ConversationRecipientsNotLoadedException(
+            conversationId = conversationId,
+        )
+
+        val selfSubId = sendData.selfSubId
+        val sendProtocol = getConversationDraftSendProtocol(
+            draft = draft,
+            sendData = sendData,
+        )
+        val shouldSendAsMms = sendProtocol == ConversationDraftSendProtocol.MMS
+
+        validateDraftForSend(
+            conversationId = conversationId,
+            draft = draft,
+            sendData = sendData,
+            selfSubId = selfSubId,
+            shouldSendAsMms = shouldSendAsMms,
+        )
+
+        val message = conversationDraftMessageDataMapper.map(
+            conversationId = conversationId,
+            draft = draft,
+            forceMms = shouldSendAsMms,
+        )
+
+        message.consolidateText()
+
+        validateMappedMessageForSend(
+            conversationId = conversationId,
+            message = message,
+            selfSubId = selfSubId,
+            ignoreMessageSizeLimit = ignoreMessageSizeLimit,
+        )
+
+        insertNewMessageWithLegacySelfLock(
+            message = message,
+            sendData = sendData,
+        )
+    }
+
+    private fun validateDraftForSend(
+        conversationId: ConversationId,
+        draft: ConversationDraft,
+        sendData: ConversationSendData,
+        selfSubId: SubId,
+        shouldSendAsMms: Boolean,
+    ) {
+        validateKnownRecipients(
+            conversationId = conversationId,
+            sendData = sendData,
+        )
+
+        validateGroupMmsSelfNumber(
+            conversationId = conversationId,
+            sendData = sendData,
+            selfSubId = selfSubId,
+            shouldSendAsMms = shouldSendAsMms,
+        )
+        validateVideoAttachmentLimit(
+            conversationId = conversationId,
+            attachments = draft.attachments,
+        )
+    }
+
+    private fun validateDraftBasics(
+        conversationId: ConversationId,
+        draft: ConversationDraft,
+    ) {
+        if (conversationId.isBlank()) {
+            throw BlankConversationIdException()
+        }
+
+        if (!draft.hasContent) {
+            throw EmptyConversationDraftException(
+                conversationId = conversationId,
+            )
+        }
+    }
+
+    private fun validateKnownRecipients(
+        conversationId: ConversationId,
+        sendData: ConversationSendData,
+    ) {
+        if (!sendData.participants.isLoaded) {
+            throw ConversationRecipientsNotLoadedException(
+                conversationId = conversationId,
+            )
+        }
+
+        val hasUnknownSenders = sendData.participants.any { it.isUnknownSender }
+
+        if (hasUnknownSenders) {
+            throw UnknownConversationRecipientException(
+                conversationId = conversationId,
+            )
+        }
+    }
+
+    private fun validateGroupMmsSelfNumber(
+        conversationId: ConversationId,
+        sendData: ConversationSendData,
+        selfSubId: SubId,
+        shouldSendAsMms: Boolean,
+    ) {
+        if (!sendData.metadata.isGroupConversation || !shouldSendAsMms) {
+            return
+        }
+
+        try {
+            val selfPhoneNumber = PhoneUtils.get(selfSubId.value).getSelfRawNumber(true)
+            if (selfPhoneNumber.isNullOrBlank()) {
+                throw MissingSelfPhoneNumberForGroupMmsException(
+                    conversationId = conversationId,
+                    selfSubId = selfSubId,
+                )
+            }
+        } catch (exception: IllegalStateException) {
+            throw ConversationSimNotReadyException(
+                conversationId = conversationId,
+                selfSubId = selfSubId,
+                cause = exception,
+            )
+        }
+    }
+
+    private fun validateVideoAttachmentLimit(
+        conversationId: ConversationId,
+        attachments: Iterable<ConversationDraftAttachment>,
+    ) {
+        val videoAttachmentCount = attachments.count { attachment ->
+            ContentType.isVideoType(attachment.contentType)
+        }
+
+        if (videoAttachmentCount > MmsUtils.MAX_VIDEO_ATTACHMENT_COUNT) {
+            throw TooManyVideoAttachmentsException(
+                conversationId = conversationId,
+                videoAttachmentCount = videoAttachmentCount,
+            )
+        }
+    }
+
+    private fun validateMappedMessageForSend(
+        conversationId: ConversationId,
+        message: MessageData,
+        selfSubId: SubId,
+        ignoreMessageSizeLimit: Boolean,
+    ) {
+        if (ignoreMessageSizeLimit) {
+            return
+        }
+
+        val attachments = message.parts.filter { part -> part.isAttachment }
+
+        if (attachments.size > subscriptionsRepository.resolveAttachmentLimit()) {
+            throw MessageLimitExceededException(conversationId = conversationId)
+        }
+
+        val totalAttachmentSize = attachments.sumOf { attachment ->
+            attachment.minimumSizeInBytesForSending
+        }
+
+        if (totalAttachmentSize > resolveMaxMessageSize(selfSubId = selfSubId)) {
+            throw MessageLimitExceededException(conversationId = conversationId)
+        }
+    }
+
+    private fun resolveMaxMessageSize(selfSubId: SubId): Int {
+        val subId = selfSubId.value
+        return when {
+            subId <= ParticipantData.DEFAULT_SELF_SUB_ID -> MmsConfig.getMaxMaxMessageSize()
+            else -> MmsConfig.get(subId).maxMessageSize
+        }
+    }
+
+    private fun insertNewMessageWithLegacySelfLock(
+        message: MessageData,
+        sendData: ConversationSendData,
+    ) {
+        val selfParticipant = sendData.selfParticipant
+
+        val systemDefaultSubId = PhoneUtils.getDefault().defaultSmsSubscriptionId
+
+        val messageHasSelfParticipant = message.selfId != null
+        val conversationUsesDefaultSelf = selfParticipant?.isDefaultSelf == true
+        val systemDefaultSubIdIsResolved = systemDefaultSubId !=
+            ParticipantData.DEFAULT_SELF_SUB_ID
+
+        val shouldLockToSystemDefaultSubId = messageHasSelfParticipant &&
+            conversationUsesDefaultSelf &&
+            systemDefaultSubIdIsResolved
+
+        when {
+            shouldLockToSystemDefaultSubId -> {
+                InsertNewMessageAction.insertNewMessage(message, systemDefaultSubId)
+            }
+
+            else -> {
+                InsertNewMessageAction.insertNewMessage(message)
+            }
+        }
+    }
+}

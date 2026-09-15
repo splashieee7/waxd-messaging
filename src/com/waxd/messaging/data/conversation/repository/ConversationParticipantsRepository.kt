@@ -1,0 +1,124 @@
+package com.waxd.messaging.data.conversation.repository
+
+import android.content.ContentResolver
+import android.database.ContentObserver
+import android.net.Uri
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.data.conversation.model.recipient.ConversationRecipient
+import com.waxd.messaging.datamodel.MessagingContentProvider
+import com.waxd.messaging.datamodel.data.ParticipantData
+import com.waxd.messaging.di.core.DefaultDispatcher
+import com.waxd.messaging.di.core.MessagingDbDispatcher
+import javax.inject.Inject
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+
+internal interface ConversationParticipantsRepository {
+    fun getParticipants(
+        conversationId: ConversationId,
+    ): Flow<ImmutableList<ConversationRecipient>>
+}
+
+internal class ConversationParticipantsRepositoryImpl @Inject constructor(
+    private val contentResolver: ContentResolver,
+    @param:DefaultDispatcher
+    private val defaultDispatcher: CoroutineDispatcher,
+    @param:MessagingDbDispatcher
+    private val messagingDbDispatcher: CoroutineDispatcher,
+) : ConversationParticipantsRepository {
+
+    override fun getParticipants(
+        conversationId: ConversationId,
+    ): Flow<ImmutableList<ConversationRecipient>> {
+        val uri = MessagingContentProvider.buildConversationParticipantsUri(conversationId.value)
+
+        return observeUri(uri = uri)
+            .flowOn(defaultDispatcher)
+            .conflate()
+            .map {
+                queryParticipants(uri = uri)
+            }
+            .flowOn(messagingDbDispatcher)
+    }
+
+    private fun observeUri(uri: Uri): Flow<Unit> {
+        return callbackFlow {
+            val observer = object : ContentObserver(null) {
+                override fun onChange(selfChange: Boolean) {
+                    trySend(Unit)
+                }
+            }
+            contentResolver.registerContentObserver(uri, true, observer)
+
+            trySend(Unit)
+
+            awaitClose {
+                contentResolver.unregisterContentObserver(observer)
+            }
+        }
+    }
+
+    private fun queryParticipants(
+        uri: Uri,
+    ): ImmutableList<ConversationRecipient> {
+        return contentResolver
+            .query(
+                uri,
+                ParticipantData.ParticipantsQuery.PROJECTION,
+                null,
+                null,
+                null,
+            )
+            ?.use { cursor ->
+                val participants = persistentListOf<ConversationRecipient>().builder()
+                val seenDestinations = LinkedHashSet<String>()
+
+                while (cursor.moveToNext()) {
+                    val participant = ParticipantData.getFromCursor(cursor)
+                    val recipient = mapParticipant(participant = participant)
+
+                    if (recipient != null && seenDestinations.add(recipient.destination)) {
+                        participants.add(recipient)
+                    }
+                }
+
+                participants.build()
+            }
+            ?: persistentListOf()
+    }
+
+    private fun mapParticipant(participant: ParticipantData): ConversationRecipient? {
+        val destination = participantDestination(participant = participant) ?: return null
+        val displayName = participant.getDisplayName(true)
+
+        return ConversationRecipient(
+            id = ParticipantId(participant.id),
+            displayName = displayName,
+            destination = destination,
+            photoUri = participant.profilePhotoUri,
+            secondaryText = participant.displayDestination
+                ?.takeIf { it.isNotBlank() }
+                ?.takeIf { it != displayName },
+        )
+    }
+
+    private fun participantDestination(participant: ParticipantData): String? {
+        return when {
+            participant.isSelf -> null
+
+            else -> {
+                participant.sendDestination
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+            }
+        }
+    }
+}

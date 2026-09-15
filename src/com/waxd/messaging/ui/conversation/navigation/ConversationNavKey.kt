@@ -1,0 +1,26 @@
+package com.waxd.messaging.ui.conversation.navigation
+
+import androidx.navigation3.runtime.NavKey
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.MessageId
+import com.waxd.messaging.ui.navigation.ConversationScopedNavKey
+import kotlinx.serialization.Serializable
+
+@Serializable
+internal data object NewChatNavKey : NavKey
+
+@Serializable
+internal data class ConversationNavKey(
+    override val conversationId: ConversationId,
+) : ConversationScopedNavKey
+
+@Serializable
+internal data class AddParticipantsNavKey(
+    override val conversationId: ConversationId,
+) : ConversationScopedNavKey
+
+@Serializable
+internal data class MessageDetailsNavKey(
+    override val conversationId: ConversationId,
+    val messageId: MessageId,
+) : ConversationScopedNavKey

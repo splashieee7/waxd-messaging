@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Copyright (C) 2015 The Android Open Source Project
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+-->
+<resources>
+    <!--
+        Waxd terminal/ops-console theme, applied to the legacy AppCompat/XML
+        chrome (action bar, widgets) that sits alongside this app's modern
+        Compose screens; see src/.../ui/core/Theme.kt for the Compose side.
+        Same four hex values as every other waxd reskin.
+    -->
+    <color name="waxd_background">#0A0C0A</color>
+    <color name="waxd_text">#D8F5E0</color>
+    <color name="waxd_primary">#2E9E5B</color>
+    <color name="waxd_accent">#4CFF8B</color>
+
+    <color name="primary_color">@color/waxd_primary</color>
+
+    <!--  Action bar -->
+    <color name="action_bar_title_text_color">@color/waxd_text</color>
+    <color name="action_bar_background_color">@color/waxd_background</color>
+    <color name="action_bar_background_color_dark">@color/waxd_background</color>
+
+    <!-- Conversation list -->
+    <color name="conversation_list_error">#F05A24</color>
+
+    <color name="timestamp_text_outgoing">#99323232</color>
+    <color name="timestamp_text_incoming">#99ffffff</color>
+    <color name="timestamp_text_failed">#99ff0000</color>
+
+    <!-- Activity background color -->
+    <drawable name="class_zero_background">#7f040000</drawable>
+
+    <color name="chips_dropdown_background_activated">#4285f4</color>
+    <color name="chips_dropdown_background_pressed">#ededed</color>
+
+    <color name="letter_tile_font_color">#ffffff</color>
+
+    <color name="notification_warning_color">#ff0000</color>
+    <color name="notification_subject_color">#DE000000</color>
+
+    <color name="text_highlight_color">#802E9E5B</color>
+
+    <color name="widget_text_color">@color/waxd_text</color>
+    <color name="widget_incoming_text_color">@color/waxd_text</color>
+    <color name="widget_outgoing_text_color">@color/waxd_text</color>
+    <color name="widget_background_color">@color/waxd_background</color>
+    <color name="ripple_material_light">#40000000</color>
+    <color name="widget_conversation_title_color">@color/waxd_primary</color>
+
+</resources>

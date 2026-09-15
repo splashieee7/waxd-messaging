@@ -1,0 +1,132 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
+package com.waxd.messaging.data.conversationsettings.repository
+
+import android.content.ContentResolver
+import android.database.ContentObserver
+import android.net.Uri
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.data.conversation.repository.ConversationsRepository
+import com.waxd.messaging.data.conversationsettings.model.ConversationSettingsData
+import com.waxd.messaging.data.conversationsettings.model.SNOOZE_NEVER_EXPIRES
+import com.waxd.messaging.datamodel.MessagingContentProvider
+import com.waxd.messaging.datamodel.data.ConversationParticipantsData
+import com.waxd.messaging.datamodel.data.ParticipantData
+import com.waxd.messaging.di.core.MessagingDbDispatcher
+import javax.inject.Inject
+import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+
+internal interface ConversationSettingsRepository {
+    fun getConversationSettings(conversationId: ConversationId): Flow<ConversationSettingsData>
+}
+
+internal class ConversationSettingsRepositoryImpl @Inject constructor(
+    private val contentResolver: ContentResolver,
+    private val conversationsRepository: ConversationsRepository,
+    private val notificationRepository: ConversationNotificationRepository,
+    @param:MessagingDbDispatcher private val messagingDbDispatcher: CoroutineDispatcher,
+) : ConversationSettingsRepository {
+
+    override fun getConversationSettings(
+        conversationId: ConversationId,
+    ): Flow<ConversationSettingsData> {
+        val uris = listOf(
+            MessagingContentProvider.buildConversationMetadataUri(conversationId.value),
+            MessagingContentProvider.buildConversationParticipantsUri(conversationId.value),
+        )
+
+        return refreshTriggers(conversationId, uris)
+            .map { loadConversationSettings(conversationId) }
+            .flowOn(messagingDbDispatcher)
+    }
+
+    private fun refreshTriggers(
+        conversationId: ConversationId,
+        uris: List<Uri>,
+    ): Flow<Unit> {
+        return observeUris(uris).flatMapLatest {
+            val immediate = flowOf(Unit)
+            val snoozeExpired = snoozeExpiry(conversationId)
+            merge(immediate, snoozeExpired)
+        }
+    }
+
+    private fun snoozeExpiry(
+        conversationId: ConversationId,
+    ): Flow<Unit> {
+        return flow {
+            val snoozeUntilMillis = notificationRepository.getSnoozeUntilMillis(conversationId)
+            if (snoozeUntilMillis == SNOOZE_NEVER_EXPIRES) return@flow
+
+            val remaining = snoozeUntilMillis - System.currentTimeMillis()
+            if (remaining <= 0L) return@flow
+
+            delay(remaining)
+            emit(Unit)
+        }
+    }
+
+    private suspend fun loadConversationSettings(
+        conversationId: ConversationId,
+    ): ConversationSettingsData {
+        val participants = queryOtherParticipants(conversationId)
+        val metadata = conversationsRepository.getConversationMetadataSnapshot(
+            conversationId = conversationId,
+        )
+
+        return ConversationSettingsData(
+            conversationId = conversationId,
+            conversationTitle = metadata?.conversationName.orEmpty(),
+            isArchived = metadata?.isArchived ?: false,
+            isSnoozed = notificationRepository.isSnoozed(conversationId),
+            participants = participants.toImmutableList(),
+            dbSelfParticipantId = metadata?.selfParticipantId,
+        )
+    }
+
+    private fun queryOtherParticipants(
+        conversationId: ConversationId,
+    ): List<ParticipantData> {
+        val participantsData = ConversationParticipantsData().apply {
+            contentResolver.query(
+                MessagingContentProvider.buildConversationParticipantsUri(conversationId.value),
+                ParticipantData.ParticipantsQuery.PROJECTION,
+                null,
+                null,
+                null,
+            )?.use { bind(it) }
+        }
+
+        return participantsData.filter { !it.isSelf }
+    }
+
+    private fun observeUris(uris: List<Uri>): Flow<Unit> {
+        return callbackFlow {
+            val observer = object : ContentObserver(null) {
+                override fun onChange(selfChange: Boolean) {
+                    trySend(Unit)
+                }
+            }
+            uris.forEach { uri ->
+                contentResolver.registerContentObserver(uri, false, observer)
+            }
+            trySend(Unit)
+            awaitClose {
+                contentResolver.unregisterContentObserver(observer)
+            }
+        }
+    }
+}

@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Copyright (C) 2015 The Android Open Source Project
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+-->
+<resources>
+    <!--
+        Base application theme, dependent on API level. This theme is replaced
+        by BugleBaseTheme from res/values-vXX/styles.xml on newer devices.
+    -->
+    <style name="BugleBaseTheme" parent="Theme.AppCompat">
+        <item name="android:forceDarkAllowed">true</item>
+        <item name="android:windowBackground">@color/waxd_background</item>
+        <item name="android:colorBackground">@color/waxd_background</item>
+        <item name="android:textColorPrimary">@color/waxd_text</item>
+    </style>
+
+    <style name="Theme.Compose" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.License" parent="Theme.AppCompat.DayNight.NoActionBar" />
+
+    <!-- Application theme. -->
+    <style name="BugleTheme" parent="BugleBaseTheme">
+        <!-- All customizations that are NOT specific to a particular API-level can go here. -->
+         <item name="android:dropDownListViewStyle">@style/DropDownListViewStyle</item>
+         <item name="colorPrimary">@color/action_bar_background_color</item>
+         <item name="colorPrimaryDark">@color/action_bar_background_color_dark</item>
+         <item name="colorAccent">@color/action_bar_background_color</item>
+         <item name="android:textColorHighlight">@color/text_highlight_color</item>
+         <item name="actionBarStyle">@style/BugleActionBar</item>
+    </style>
+
+    <style name="BugleTheme.DialogActivity" parent="@style/Theme.AppCompat.Dialog">
+        <item name="android:windowNoTitle">false</item>
+        <item name="android:background">@color/waxd_background</item>
+    </style>
+
+    <!-- Class 0 is a Compose dialog hosted by a dialog-themed Activity.
+         Keep the host window transparent and titleless so only the Material dialog surface is visible -->
+    <style name="BugleTheme.ClassZeroActivity" parent="@style/BugleTheme.DialogActivity">
+        <item name="android:background">@android:color/transparent</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
+    <style name="Invisible" parent="BugleBaseTheme">
+        <item name="android:windowBackground">@null</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowNoDisplay">true</item>
+    </style>
+
+    <style name="BugleActionBar" parent="@style/Widget.AppCompat.ActionBar.Solid">
+        <item name="height">@dimen/action_bar_height</item>
+        <item name="displayOptions">showTitle</item>
+        <item name="titleTextStyle">@style/BugleActionBarTitleTextStyle</item>
+    </style>
+
+    <style name="BugleActionBarTitleTextStyle" parent="@style/TextAppearance.AppCompat.Widget.ActionBar.Title">
+      <item name="android:textColor">@color/action_bar_title_text_color</item>
+      <item name="android:textSize">@dimen/action_bar_text_size</item>
+      <item name="android:lines">1</item>
+    </style>
+
+    <style name="NotificationSubjectText">
+        <item name="android:textColor">@color/notification_subject_color</item>
+    </style>
+
+    <!-- Styles to support RTL for pre API 17 -->
+
+    <style name="ConversationListNotificationBellPaddingStyle">
+        <item name="android:paddingRight">@dimen/conversation_list_notification_bell_padding</item>
+    </style>
+
+    <style name="DropDownListViewStyle" parent="Widget.AppCompat.ListView.DropDown">
+      <item name="android:dividerHeight">0dp</item>
+    </style>
+
+    <style name="ChipDeleteIconStyle">
+        <item name="android:paddingLeft">8dp</item>
+    </style>
+
+    <style name="WidgetTitle" parent="@android:style/TextAppearance.Holo.Widget.ActionBar.Title">
+        <item name="android:textColor">@color/action_bar_title_text_color</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:layout_marginEnd">8dp</item>
+    </style>
+
+    <style name="WidgetConversationTitle" parent="@android:style/TextAppearance.Holo.Widget.ActionBar.Title">
+        <item name="android:textColor">@color/widget_conversation_title_color</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:layout_marginRight">8dp</item>
+        <item name="android:textSize">@dimen/widget_conversation_title_size</item>
+        <item name="android:shadowColor">#000000</item>
+        <item name="android:shadowDx">0</item>
+        <item name="android:shadowDy">2</item>
+        <item name="android:shadowRadius">1</item>
+    </style>
+
+    <style name="WidgetHeaderImage">
+        <item name="android:paddingStart">4dip</item>
+    </style>
+
+    <style name="WidgetConversationListItemAvatar">
+        <item name="android:layout_marginEnd">12dp</item>
+        <item name="android:layout_marginStart">8dp</item>
+        <item name="android:layout_alignParentStart">true</item>
+    </style>
+
+    <style name="WidgetConversationItemAvatarIncoming">
+        <item name="android:layout_marginStart">8dp</item>
+        <item name="android:layout_alignParentStart">true</item>
+    </style>
+
+    <style name="WidgetConversationItemAvatarOutgoing">
+        <item name="android:layout_marginRight">8dp</item>
+        <item name="android:layout_alignParentRight">true</item>
+    </style>
+
+    <style name="WidgetConversationItemBodyIncoming">
+        <item name="android:layout_toRightOf">@id/avatarFrame</item>
+    </style>
+
+    <style name="WidgetConversationItemBodyOutgoing">
+        <item name="android:layout_toLeftOf">@id/avatarFrame</item>
+    </style>
+
+    <style name="WidgetConversationItemIncomingAvatarShadow">
+        <item name="android:layout_marginLeft">4dp</item>
+    </style>
+
+    <style name="WidgetConversationItemOutgoingAvatarShadow">
+        <item name="android:layout_marginLeft">-4dp</item>
+    </style>
+
+    <style name="WidgetConversationItemDate">
+        <item name="android:layout_marginRight">8dp</item>
+        <item name="android:layout_marginLeft">5dp</item>
+        <item name="android:layout_alignParentLeft">true</item>
+    </style>
+
+    <style name="WidgetConversationItemFailed">
+        <item name="android:layout_gravity">bottom|right</item>
+    </style>
+
+    <style name="WidgetConversationItemAttachment">
+        <item name="android:layout_gravity">bottom|right</item>
+    </style>
+
+    <style name="WidgetConversationItemWidget">
+        <item name="android:layout_marginRight">8dp</item>
+        <item name="android:layout_marginLeft">5dp</item>
+        <item name="android:layout_alignParentLeft">true</item>
+    </style>
+
+    <style name="WidgetConversationListItemBody">
+        <item name="android:layout_toRightOf">@id/avatarFrame</item>
+    </style>
+
+    <style name="WidgetConversationListItemFrom">
+        <item name="android:layout_marginRight">5dp</item>
+        <item name="android:layout_alignParentLeft">true</item>
+    </style>
+
+    <style name="WidgetConversationListItemDate">
+        <item name="android:layout_marginRight">8dp</item>
+        <item name="android:layout_marginLeft">5dp</item>
+        <item name="android:layout_gravity">right</item>
+    </style>
+
+    <style name="WidgetLoading">
+        <item name="android:layout_marginLeft">16dp</item>
+    </style>
+
+    <style name="WidgetConversationListItemStyle">
+        <item name="android:background">@drawable/widget_item_background</item>
+        <item name="android:layout_height">72dp</item>
+    </style>
+
+</resources>

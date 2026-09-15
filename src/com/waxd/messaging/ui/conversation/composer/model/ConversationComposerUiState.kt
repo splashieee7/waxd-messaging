@@ -1,0 +1,32 @@
+package com.waxd.messaging.ui.conversation.composer.model
+
+import androidx.compose.runtime.Immutable
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.data.conversation.model.metadata.ConversationComposerDisabledReason
+import com.waxd.messaging.domain.conversation.usecase.draft.model.ConversationDraftSendProtocol
+import com.waxd.messaging.ui.conversation.audio.model.ConversationAudioRecordingUiState
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+
+@Immutable
+internal data class ConversationComposerUiState(
+    val audioRecording: ConversationAudioRecordingUiState = ConversationAudioRecordingUiState(),
+    val attachments: ImmutableList<ComposerAttachmentUiModel> = persistentListOf(),
+    val messageText: String = "",
+    val subjectText: String = "",
+    val selfParticipantId: ParticipantId? = null,
+    val simSelector: ConversationSimSelectorUiState = ConversationSimSelectorUiState(),
+    val isMessageFieldEnabled: Boolean = false,
+    val isAttachmentActionEnabled: Boolean = false,
+    val isRecordActionEnabled: Boolean = false,
+    val isSendEnabled: Boolean = false,
+    val shouldShowRecordAction: Boolean = false,
+    val hasWorkingDraft: Boolean = false,
+    val sendProtocol: ConversationDraftSendProtocol = ConversationDraftSendProtocol.SMS,
+    val attachmentCount: Int = 0,
+    val pendingAttachmentCount: Int = 0,
+    val segmentCounter: ConversationSegmentCounterUiState? = null,
+    val isCheckingDraft: Boolean = false,
+    val isSending: Boolean = false,
+    val disabledReason: ConversationComposerDisabledReason? = null,
+)

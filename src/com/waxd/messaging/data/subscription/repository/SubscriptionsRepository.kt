@@ -1,0 +1,346 @@
+package com.waxd.messaging.data.subscription.repository
+
+import android.Manifest.permission.MODIFY_PHONE_STATE
+import android.content.BroadcastReceiver
+import android.content.ContentResolver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.database.ContentObserver
+import android.net.Uri
+import android.telephony.SubscriptionManager
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.data.conversation.model.metadata.ConversationSubscriptionLabel
+import com.waxd.messaging.data.subscription.model.SubId
+import com.waxd.messaging.data.subscription.model.Subscription
+import com.waxd.messaging.datamodel.DatabaseHelper.ParticipantColumns
+import com.waxd.messaging.datamodel.MessagingContentProvider
+import com.waxd.messaging.datamodel.data.ParticipantData
+import com.waxd.messaging.debug.DebugSimEmulationMode
+import com.waxd.messaging.debug.DebugSimEmulationSource
+import com.waxd.messaging.di.core.DefaultDispatcher
+import com.waxd.messaging.di.core.MessagingDbDispatcher
+import com.waxd.messaging.sms.MmsConfig
+import com.waxd.messaging.util.BugleGservices
+import com.waxd.messaging.util.BugleGservicesKeys
+import com.waxd.messaging.util.LogUtil
+import com.waxd.messaging.util.PhoneUtils
+import com.waxd.messaging.util.core.extension.typedFlow
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+
+internal interface SubscriptionsRepository {
+    fun observeActiveSubscriptions(): Flow<ImmutableList<Subscription>>
+
+    fun observeDefaultSmsSubscriptionId(): Flow<SubId>
+
+    fun getDefaultSmsSubscriptionId(): SubId
+
+    fun resolveAttachmentLimit(): Int
+
+    fun resolveMaxMessageSize(selfParticipantId: ParticipantId?): Flow<Int>
+}
+
+internal class SubscriptionsRepositoryImpl @Inject constructor(
+    @param:ApplicationContext
+    private val context: Context,
+    private val contentResolver: ContentResolver,
+    private val subscriptionManager: SubscriptionManager,
+    private val debugSimEmulationSource: DebugSimEmulationSource,
+    @param:DefaultDispatcher
+    private val defaultDispatcher: CoroutineDispatcher,
+    @param:MessagingDbDispatcher
+    private val messagingDbDispatcher: CoroutineDispatcher,
+) : SubscriptionsRepository {
+
+    override fun observeActiveSubscriptions(): Flow<ImmutableList<Subscription>> {
+        val uri = MessagingContentProvider.PARTICIPANTS_URI
+
+        val realSubscriptions = observeUri(uri = uri)
+            .flowOn(defaultDispatcher)
+            .conflate()
+            .map {
+                queryActiveSubscriptions()
+            }
+            .flowOn(messagingDbDispatcher)
+
+        return combine(
+            realSubscriptions,
+            debugSimEmulationSource.mode,
+        ) { subscriptions, emulationMode ->
+            applyDebugEmulation(
+                subscriptions = subscriptions,
+                mode = emulationMode,
+            )
+        }
+    }
+
+    override fun observeDefaultSmsSubscriptionId(): Flow<SubId> {
+        return callbackFlow {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    if (
+                        intent.action ==
+                        SubscriptionManager.ACTION_DEFAULT_SMS_SUBSCRIPTION_CHANGED
+                    ) {
+                        trySend(Unit)
+                    }
+                }
+            }
+            val listener = object : SubscriptionManager.OnSubscriptionsChangedListener() {
+                override fun onSubscriptionsChanged() {
+                    trySend(Unit)
+                }
+            }
+
+            context.registerReceiver(
+                receiver,
+                IntentFilter(SubscriptionManager.ACTION_DEFAULT_SMS_SUBSCRIPTION_CHANGED),
+                MODIFY_PHONE_STATE,
+                null,
+                Context.RECEIVER_EXPORTED,
+            )
+            subscriptionManager.addOnSubscriptionsChangedListener(context.mainExecutor, listener)
+            trySend(Unit)
+
+            awaitClose {
+                context.unregisterReceiver(receiver)
+                subscriptionManager.removeOnSubscriptionsChangedListener(listener)
+            }
+        }
+            .map { getDefaultSmsSubscriptionId() }
+            .distinctUntilChanged()
+            .flowOn(defaultDispatcher)
+    }
+
+    override fun getDefaultSmsSubscriptionId(): SubId {
+        return SubId(PhoneUtils.getDefault().defaultSmsSubscriptionId)
+    }
+
+    override fun resolveAttachmentLimit(): Int {
+        return BugleGservices
+            .get()
+            .getInt(
+                BugleGservicesKeys.MMS_ATTACHMENT_LIMIT,
+                BugleGservicesKeys.MMS_ATTACHMENT_LIMIT_DEFAULT,
+            )
+    }
+
+    override fun resolveMaxMessageSize(selfParticipantId: ParticipantId?): Flow<Int> {
+        return typedFlow {
+            resolveSubscriptionId(selfParticipantId = selfParticipantId)
+        }
+            .flowOn(messagingDbDispatcher)
+            .map { resolvedSubId ->
+                resolveMaxMessageSizeForSubId(resolvedSubId = resolvedSubId)
+            }
+            .catch { throwable ->
+                if (throwable is CancellationException) {
+                    throw throwable
+                }
+
+                LogUtil.w(TAG, "Failed to resolve max message size", throwable)
+                emit(MmsConfig.getMaxMaxMessageSize())
+            }
+    }
+
+    private fun applyDebugEmulation(
+        subscriptions: ImmutableList<Subscription>,
+        mode: DebugSimEmulationMode,
+    ): ImmutableList<Subscription> {
+        return when (mode) {
+            DebugSimEmulationMode.DEFAULT -> subscriptions
+            DebugSimEmulationMode.SINGLE -> applySingleSimEmulation(subscriptions = subscriptions)
+            DebugSimEmulationMode.DUAL -> applyDualSimEmulation(subscriptions = subscriptions)
+        }
+    }
+
+    private fun applySingleSimEmulation(
+        subscriptions: ImmutableList<Subscription>,
+    ): ImmutableList<Subscription> {
+        val hasRealSubscription = subscriptions.isNotEmpty()
+
+        if (hasRealSubscription) {
+            return subscriptions
+        }
+
+        return persistentListOf(
+            fakeSubscription(slotId = 1, colorIndex = 0),
+        )
+    }
+
+    private fun applyDualSimEmulation(
+        subscriptions: ImmutableList<Subscription>,
+    ): ImmutableList<Subscription> {
+        return when (subscriptions.size) {
+            0 -> {
+                persistentListOf(
+                    fakeSubscription(slotId = 1, colorIndex = 0),
+                    fakeSubscription(slotId = 2, colorIndex = 1),
+                )
+            }
+
+            1 -> pairRealSubscriptionWithFake(realSubscription = subscriptions.first())
+
+            else -> subscriptions
+        }
+    }
+
+    private fun pairRealSubscriptionWithFake(
+        realSubscription: Subscription,
+    ): ImmutableList<Subscription> {
+        val fakeSlot = when (realSubscription.displaySlotId) {
+            1 -> 2
+            else -> 1
+        }
+        return sequenceOf(
+            realSubscription,
+            fakeSubscription(slotId = fakeSlot, colorIndex = 1),
+        )
+            .sortedBy { subscription -> subscription.displaySlotId }
+            .toImmutableList()
+    }
+
+    private fun fakeSubscription(
+        slotId: Int,
+        colorIndex: Int,
+    ): Subscription {
+        return Subscription(
+            selfParticipantId = ParticipantId("$FAKE_SIM_ID_PREFIX$slotId"),
+            subId = SubId(ParticipantData.DEFAULT_SELF_SUB_ID),
+            label = ConversationSubscriptionLabel.DebugFake(slotId = slotId),
+            displayDestination = null,
+            displaySlotId = slotId,
+            color = FAKE_SIM_COLORS[colorIndex % FAKE_SIM_COLORS.size],
+        )
+    }
+
+    private fun observeUri(uri: Uri): Flow<Unit> {
+        return callbackFlow {
+            val observer = object : ContentObserver(null) {
+                override fun onChange(selfChange: Boolean) {
+                    trySend(Unit)
+                }
+            }
+            contentResolver.registerContentObserver(uri, true, observer)
+
+            trySend(Unit)
+
+            awaitClose {
+                contentResolver.unregisterContentObserver(observer)
+            }
+        }
+    }
+
+    private fun queryActiveSubscriptions(): ImmutableList<Subscription> {
+        return contentResolver
+            .query(
+                MessagingContentProvider.PARTICIPANTS_URI,
+                ParticipantData.ParticipantsQuery.PROJECTION,
+                "${ParticipantColumns.SUB_ID} <> ?",
+                arrayOf(ParticipantData.OTHER_THAN_SELF_SUB_ID.toString()),
+                null,
+            )
+            ?.use { cursor ->
+                val subscriptions = persistentListOf<Subscription>().builder()
+
+                while (cursor.moveToNext()) {
+                    val participant = ParticipantData.getFromCursor(cursor)
+
+                    val shouldSkip = !participant.isSelf ||
+                        participant.isDefaultSelf ||
+                        !participant.isActiveSubscription
+
+                    if (shouldSkip) {
+                        continue
+                    }
+
+                    subscriptions.add(participant.toConversationSubscription())
+                }
+
+                subscriptions
+                    .build()
+                    .sortedBy { subscription -> subscription.displaySlotId }
+                    .toImmutableList()
+            }
+            ?: persistentListOf()
+    }
+
+    private fun resolveMaxMessageSizeForSubId(
+        resolvedSubId: Int?,
+    ): Int {
+        return when {
+            resolvedSubId == null || resolvedSubId <= ParticipantData.DEFAULT_SELF_SUB_ID -> {
+                MmsConfig.getMaxMaxMessageSize()
+            }
+
+            else -> {
+                MmsConfig.get(resolvedSubId).maxMessageSize
+            }
+        }
+    }
+
+    private fun resolveSubscriptionId(selfParticipantId: ParticipantId?): Int? {
+        if (selfParticipantId == null) {
+            return null
+        }
+
+        return contentResolver.query(
+            MessagingContentProvider.PARTICIPANTS_URI,
+            ParticipantData.ParticipantsQuery.PROJECTION,
+            "${ParticipantColumns._ID} = ?",
+            arrayOf(selfParticipantId.value),
+            null,
+        )?.use { cursor ->
+            when {
+                cursor.moveToFirst() -> {
+                    ParticipantData.getFromCursor(cursor).subId
+                }
+
+                else -> null
+            }
+        }
+    }
+
+    private companion object {
+        private const val TAG = "ConversationSubscriptionsRepo"
+        private const val FAKE_SIM_ID_PREFIX = "debug_sim_emulated_"
+        private val FAKE_SIM_COLORS = intArrayOf(
+            0xFF5E9BE8.toInt(),
+            0xFFE97E6A.toInt(),
+        )
+    }
+
+    private fun ParticipantData.toConversationSubscription(): Subscription {
+        val slotId = displaySlotId
+
+        return Subscription(
+            selfParticipantId = ParticipantId(id),
+            subId = SubId(subId),
+            label = when {
+                subscriptionName.isNullOrBlank() -> ConversationSubscriptionLabel.Slot(
+                    slotId = slotId,
+                )
+
+                else -> ConversationSubscriptionLabel.Named(name = subscriptionName)
+            },
+            displayDestination = displayDestination?.takeIf { it.isNotBlank() },
+            displaySlotId = slotId,
+            color = subscriptionColor,
+        )
+    }
+}

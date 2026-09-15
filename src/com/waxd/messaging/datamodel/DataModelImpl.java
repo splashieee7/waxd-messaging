@@ -1,0 +1,186 @@
+/*
+ * Copyright (C) 2015 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.waxd.messaging.datamodel;
+
+import android.content.Context;
+import android.database.sqlite.SQLiteDatabase;
+import android.telephony.SubscriptionManager;
+
+import com.waxd.messaging.datamodel.action.ActionService;
+import com.waxd.messaging.datamodel.action.BackgroundWorker;
+import com.waxd.messaging.datamodel.action.FixupMessageStatusOnStartupAction;
+import com.waxd.messaging.datamodel.action.ProcessPendingMessagesAction;
+import com.waxd.messaging.datamodel.data.ConversationData;
+import com.waxd.messaging.datamodel.data.ConversationData.ConversationDataListener;
+import com.waxd.messaging.datamodel.data.ConversationListData;
+import com.waxd.messaging.datamodel.data.ConversationListData.ConversationListDataListener;
+import com.waxd.messaging.datamodel.data.DraftMessageData;
+import com.waxd.messaging.datamodel.data.GalleryGridItemData;
+import com.waxd.messaging.datamodel.data.LaunchConversationData;
+import com.waxd.messaging.datamodel.data.LaunchConversationData.LaunchConversationDataListener;
+import com.waxd.messaging.datamodel.data.MediaPickerData;
+import com.waxd.messaging.datamodel.data.ParticipantData;
+import com.waxd.messaging.sms.MmsConfig;
+import com.waxd.messaging.util.Assert;
+import com.waxd.messaging.util.Assert.DoesNotRunOnMainThread;
+import com.waxd.messaging.util.ConnectivityUtil;
+import com.waxd.messaging.util.LogUtil;
+import com.waxd.messaging.util.PhoneUtils;
+
+import java.util.concurrent.ConcurrentHashMap;
+
+public class DataModelImpl extends DataModel {
+    private final Context mContext;
+    private final ActionService mActionService;
+    private final BackgroundWorker mDataModelWorker;
+    private final DatabaseHelper mDatabaseHelper;
+    private final SyncManager mSyncManager;
+
+    // Cached ConnectivityUtil subId->instance for N and beyond
+    private static final ConcurrentHashMap<Integer, ConnectivityUtil>
+            sConnectivityUtilInstanceCacheN = new ConcurrentHashMap<>();
+
+    public DataModelImpl(final Context context) {
+        super();
+        mContext = context;
+        mActionService = new ActionService();
+        mDataModelWorker = new BackgroundWorker();
+        mDatabaseHelper = DatabaseHelper.getInstance(context);
+        mSyncManager = new SyncManager();
+    }
+
+    @Override
+    public ConversationListData createConversationListData(final Context context,
+            final ConversationListDataListener listener, final boolean archivedMode) {
+        return new ConversationListData(context, listener, archivedMode);
+    }
+
+    @Override
+    public ConversationData createConversationData(final Context context,
+            final ConversationDataListener listener, final String conversationId) {
+        return new ConversationData(context, listener, conversationId);
+    }
+
+    @Override
+    public MediaPickerData createMediaPickerData(final Context context) {
+        return new MediaPickerData(context);
+    }
+
+    @Override
+    public GalleryGridItemData createGalleryGridItemData() {
+        return new GalleryGridItemData();
+    }
+
+    @Override
+    public LaunchConversationData createLaunchConversationData(
+            final LaunchConversationDataListener listener) {
+       return new LaunchConversationData(listener);
+    }
+
+    @Override
+    public DraftMessageData createDraftMessageData(String conversationId) {
+        return new DraftMessageData(conversationId);
+    }
+
+    @Override
+    public ActionService getActionService() {
+        // We need to allow access to this on the UI thread since it's used to start actions.
+        return mActionService;
+    }
+
+    @Override
+    public BackgroundWorker getBackgroundWorkerForActionService() {
+        return mDataModelWorker;
+    }
+
+    @Override
+    @DoesNotRunOnMainThread
+    public DatabaseWrapper getDatabase() {
+        // We prevent the main UI thread from accessing the database since we have to allow
+        // public access to this class to enable sub-packages to access data.
+        Assert.isNotMainThread();
+        return mDatabaseHelper.getDatabase();
+    }
+
+    @Override
+    public SyncManager getSyncManager() {
+        return mSyncManager;
+    }
+
+    @Override
+    void onCreateTables(final SQLiteDatabase db) {
+        LogUtil.w(LogUtil.BUGLE_TAG, "Rebuilt databases: reseting related state");
+        // Clear other things that implicitly reference the DB
+        SyncManager.resetLastSyncTimestamps();
+    }
+
+    @Override
+    public void onActivityResume() {
+        // Perform an incremental sync and register for changes if necessary
+        mSyncManager.updateSyncObserver(mContext);
+
+        // Trigger a participant refresh if needed, we should only need to refresh if there is
+        // contact change while the activity was paused.
+        ParticipantRefresh.refreshParticipantsIfNeeded();
+    }
+
+    @Override
+    public void onApplicationCreated() {
+        createConnectivityUtilForEachActiveSubscription();
+
+        FixupMessageStatusOnStartupAction.fixupMessageStatus();
+        ProcessPendingMessagesAction.processFirstPendingMessage();
+        SyncManager.immediateSync();
+
+
+        // Start listening for subscription change events for refreshing any data associated
+        // with subscriptions.
+        PhoneUtils.getDefault().registerOnSubscriptionsChangedListener(
+                new SubscriptionManager.OnSubscriptionsChangedListener() {
+                    @Override
+                    public void onSubscriptionsChanged() {
+                        // TODO: This dynamically changes the mms config that app is
+                        // currently using. It may cause inconsistency in some cases. We need
+                        // to check the usage of mms config and handle the dynamic change
+                        // gracefully
+                        MmsConfig.loadAsync();
+                        ParticipantRefresh.refreshSelfParticipants();
+                        createConnectivityUtilForEachActiveSubscription();
+                    }
+                });
+    }
+
+    private void createConnectivityUtilForEachActiveSubscription() {
+        PhoneUtils.forEachActiveSubscription(new PhoneUtils.SubscriptionRunnable() {
+            @Override
+            public void runForSubscription(int subId) {
+                // Create the ConnectivityUtil instance for given subId if absent.
+                if (subId <= ParticipantData.DEFAULT_SELF_SUB_ID) {
+                    subId = PhoneUtils.getDefault().getDefaultSmsSubscriptionId();
+                }
+                if (!sConnectivityUtilInstanceCacheN.containsKey(subId)) {
+                    sConnectivityUtilInstanceCacheN.put(
+                            subId, new ConnectivityUtil(mContext, subId));
+                }
+            }
+        });
+    }
+
+    public static ConnectivityUtil getConnectivityUtil(final int subId) {
+        return sConnectivityUtilInstanceCacheN.get(subId);
+    }
+}

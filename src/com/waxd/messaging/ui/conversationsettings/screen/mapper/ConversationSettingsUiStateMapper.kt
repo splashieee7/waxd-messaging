@@ -1,0 +1,105 @@
+package com.waxd.messaging.ui.conversationsettings.screen.mapper
+
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.data.conversationsettings.model.ConversationSettingsData
+import com.waxd.messaging.data.subscription.model.Subscription
+import com.waxd.messaging.datamodel.data.ParticipantData
+import com.waxd.messaging.domain.conversation.usecase.participant.CanShowOrAddContact
+import com.waxd.messaging.domain.conversation.usecase.participant.IsContactSaved
+import com.waxd.messaging.domain.conversation.usecase.telephony.CanPlacePhoneCall
+import com.waxd.messaging.ui.conversationsettings.screen.model.ConversationSettingsUiState
+import com.waxd.messaging.ui.conversationsettings.screen.model.ParticipantUiState
+import javax.inject.Inject
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.toImmutableList
+
+internal interface ConversationSettingsUiStateMapper {
+    fun map(
+        data: ConversationSettingsData,
+        subscriptions: ImmutableList<Subscription> = persistentListOf(),
+        selfIdOverride: ParticipantId? = null,
+    ): ConversationSettingsUiState
+}
+
+internal class ConversationSettingsUiStateMapperImpl @Inject constructor(
+    private val canPlacePhoneCall: CanPlacePhoneCall,
+    private val canShowOrAddContact: CanShowOrAddContact,
+    private val isContactSavedUseCase: IsContactSaved,
+) : ConversationSettingsUiStateMapper {
+
+    override fun map(
+        data: ConversationSettingsData,
+        subscriptions: ImmutableList<Subscription>,
+        selfIdOverride: ParticipantId?,
+    ): ConversationSettingsUiState {
+        val participants = data.participants
+            .map(::toParticipantUiState)
+            .toImmutableList()
+        val otherParticipant = participants.singleOrNull()
+        val effectiveSelfId = selfIdOverride ?: data.dbSelfParticipantId
+        val selectedSubscription = subscriptions
+            .firstOrNull { it.selfParticipantId == effectiveSelfId }
+            ?: subscriptions.firstOrNull()
+
+        val canShowContact = otherParticipant?.let { participant ->
+            canShowOrAddContact(
+                isGroup = false,
+                contactId = participant.contactId,
+                lookupKey = participant.lookupKey,
+                destination = participant.normalizedDestination,
+            )
+        }
+
+        return ConversationSettingsUiState(
+            conversationId = data.conversationId,
+            conversationTitle = data.conversationTitle,
+            isArchived = data.isArchived,
+            isSnoozed = data.isSnoozed,
+            participants = participants,
+            otherParticipant = otherParticipant,
+            selfParticipantId = effectiveSelfId,
+            availableSubscriptions = subscriptions,
+            selectedSubscription = selectedSubscription,
+            isSimSwitchAvailable = subscriptions.size > 1,
+            canCall = otherParticipant?.canCall == true,
+            canShowContact = canShowContact == true,
+            isContactSaved = otherParticipant?.isContactSaved == true,
+        )
+    }
+
+    private fun toParticipantUiState(
+        participant: ParticipantData,
+    ): ParticipantUiState {
+        val fullName = participant.fullName
+        val hasFullName = !fullName.isNullOrEmpty()
+        val displayName = when {
+            hasFullName -> fullName
+            else -> participant.displayDestination.orEmpty()
+        }
+        val details = when {
+            hasFullName && !participant.isUnknownSender -> participant.displayDestination
+            else -> null
+        }
+        val canCall = canPlacePhoneCall(participant.normalizedDestination)
+        val isContactSaved = isContactSavedUseCase(
+            contactId = participant.contactId,
+            lookupKey = participant.lookupKey,
+        )
+
+        return ParticipantUiState(
+            id = ParticipantId(participant.id),
+            avatarUri = participant.profilePhotoUri?.takeIf(String::isNotBlank),
+            displayName = displayName,
+            details = details,
+            contactId = participant.contactId,
+            lookupKey = participant.lookupKey,
+            normalizedDestination = participant.normalizedDestination,
+            isBlocked = participant.isBlocked,
+            displayDestination = participant.displayDestination,
+            canCall = canCall,
+            isContactSaved = isContactSaved,
+            isDisplayNameLtr = !hasFullName,
+        )
+    }
+}

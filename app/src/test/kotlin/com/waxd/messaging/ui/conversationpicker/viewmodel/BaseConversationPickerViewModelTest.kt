@@ -1,0 +1,114 @@
+package com.waxd.messaging.ui.conversationpicker.viewmodel
+
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.draft.ConversationDraft
+import com.waxd.messaging.domain.conversation.usecase.participant.ResolveConversationId
+import com.waxd.messaging.domain.conversation.usecase.participant.model.ResolveConversationIdResult
+import com.waxd.messaging.testutil.MainDispatcherRule
+import com.waxd.messaging.testutil.TEST_CONTACT_DESTINATION
+import com.waxd.messaging.testutil.TEST_RESOLVED_CONVERSATION_ID
+import com.waxd.messaging.ui.conversationpicker.ConversationPickerViewModel
+import com.waxd.messaging.ui.conversationpicker.delegate.DraftDelegate
+import com.waxd.messaging.ui.conversationpicker.delegate.TargetsDelegate
+import com.waxd.messaging.ui.conversationpicker.mapper.ContactTargetMapperImpl
+import com.waxd.messaging.ui.conversationpicker.model.DraftUiState
+import com.waxd.messaging.ui.conversationpicker.model.SelectionUiState
+import com.waxd.messaging.ui.conversationpicker.model.TargetUiState
+import com.waxd.messaging.ui.conversationpicker.model.TargetsUiState
+import com.waxd.messaging.ui.recipientselection.delegate.RecipientPickerDelegate
+import com.waxd.messaging.ui.recipientselection.model.picker.RecipientPickerUiState
+import com.waxd.messaging.ui.subscription.delegate.SimSelectionDelegate
+import com.waxd.messaging.ui.subscription.model.SimSelectionUiState
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.persistentSetOf
+import kotlinx.collections.immutable.toImmutableList
+import kotlinx.collections.immutable.toImmutableSet
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.Rule
+
+@OptIn(ExperimentalCoroutinesApi::class)
+internal abstract class BaseConversationPickerViewModelTest {
+
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
+    protected val targetsState = MutableStateFlow(TargetsUiState())
+    protected val contactsState = MutableStateFlow(RecipientPickerUiState())
+    protected val draftState = MutableStateFlow(DraftUiState())
+    protected val simSelectionState = MutableStateFlow(SimSelectionUiState())
+    protected val selectedIds = MutableStateFlow(persistentSetOf<String>())
+
+    protected val targetsDelegate = mockk<TargetsDelegate>(relaxed = true) {
+        every { state } returns targetsState
+        every {
+            this@mockk.selectedIds
+        } returns this@BaseConversationPickerViewModelTest.selectedIds
+        every { currentSelectedTargets } returns persistentListOf()
+    }
+
+    protected val recipientPickerDelegate = mockk<RecipientPickerDelegate>(relaxed = true) {
+        every { state } returns contactsState
+    }
+
+    protected val contactTargetMapper = ContactTargetMapperImpl()
+
+    protected val draftDelegate = mockk<DraftDelegate>(relaxed = true) {
+        every { state } returns draftState
+        every { currentDraft() } returns ConversationDraft()
+    }
+
+    protected val simSelectionDelegate = mockk<SimSelectionDelegate>(relaxed = true) {
+        every { state } returns simSelectionState
+        every { currentSelectedSelfParticipantId() } returns null
+    }
+
+    protected val resolveConversationId = mockk<ResolveConversationId>()
+
+    protected fun createViewModel(): ConversationPickerViewModel {
+        return ConversationPickerViewModel(
+            targetsDelegate = targetsDelegate,
+            recipientPickerDelegate = recipientPickerDelegate,
+            draftDelegate = draftDelegate,
+            simSelectionDelegate = simSelectionDelegate,
+            resolveConversationId = resolveConversationId,
+            contactTargetMapper = contactTargetMapper,
+        )
+    }
+
+    protected fun givenSelectedTargets(targets: List<TargetUiState>) {
+        every { targetsDelegate.currentSelectedTargets } returns targets.toImmutableList()
+        selectedIds.value = targets.map { it.selectionId }.toImmutableSet().let {
+            persistentSetOf<String>().addingAll(it)
+        }
+    }
+
+    protected fun givenResolvedConversation(
+        destination: String = TEST_CONTACT_DESTINATION,
+        conversationId: ConversationId = TEST_RESOLVED_CONVERSATION_ID,
+    ) {
+        coEvery { resolveConversationId(listOf(destination)) } returns
+            ResolveConversationIdResult.Resolved(conversationId)
+    }
+
+    protected fun givenUnresolvedConversation(
+        destination: String = TEST_CONTACT_DESTINATION,
+        result: ResolveConversationIdResult = ResolveConversationIdResult.NotResolved,
+    ) {
+        coEvery { resolveConversationId(listOf(destination)) } returns result
+    }
+
+    protected fun setSelection(selectedTargets: List<TargetUiState>) {
+        targetsState.value = targetsState.value.copy(
+            selection = SelectionUiState(
+                selectedIds = selectedTargets.map { it.selectionId }
+                    .toImmutableSet()
+                    .let { persistentSetOf<String>().addingAll(it) },
+                selectedTargets = selectedTargets.toImmutableList(),
+            ),
+        )
+    }
+}

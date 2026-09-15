@@ -1,0 +1,681 @@
+package com.waxd.messaging.ui.conversationsettings.screen
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Snooze
+import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State as ComposeState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.waxd.messaging.R
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.ui.common.components.horizontalSlideContentTransform
+import com.waxd.messaging.ui.common.components.safeDrawingContentPadding
+import com.waxd.messaging.ui.common.text.asLtrText
+import com.waxd.messaging.ui.conversation.conversationSettingsParticipantRowTestTag
+import com.waxd.messaging.ui.conversationsettings.common.ConversationHeader
+import com.waxd.messaging.ui.conversationsettings.common.ConversationSettingsItem
+import com.waxd.messaging.ui.conversationsettings.common.ConversationSettingsTopAppBar
+import com.waxd.messaging.ui.conversationsettings.common.GroupedItemSpacing
+import com.waxd.messaging.ui.conversationsettings.common.ParticipantItem
+import com.waxd.messaging.ui.conversationsettings.common.ScreenContentPadding
+import com.waxd.messaging.ui.conversationsettings.common.SectionSpacing
+import com.waxd.messaging.ui.conversationsettings.common.groupedBottomItemShape
+import com.waxd.messaging.ui.conversationsettings.common.groupedMiddleItemShape
+import com.waxd.messaging.ui.conversationsettings.common.groupedTopItemShape
+import com.waxd.messaging.ui.conversationsettings.common.settingsCardShape
+import com.waxd.messaging.ui.conversationsettings.screen.ConversationSettingsNavRouteSavedState as NavRouteSavedState
+import com.waxd.messaging.ui.conversationsettings.screen.model.ConversationSettingsAction as Action
+import com.waxd.messaging.ui.conversationsettings.screen.model.ConversationSettingsNavEvent as NavEvent
+import com.waxd.messaging.ui.conversationsettings.screen.model.ConversationSettingsNavRoute as NavRoute
+import com.waxd.messaging.ui.conversationsettings.screen.model.ConversationSettingsUiState as State
+import com.waxd.messaging.ui.conversationsettings.screen.model.ParticipantConversationSettingsAction as ParticipantAction
+import com.waxd.messaging.ui.conversationsettings.screen.model.ParticipantUiState
+import com.waxd.messaging.ui.conversationsettings.screen.model.saveableKey
+import com.waxd.messaging.ui.conversationsettings.screen.model.targetConversationId
+import com.waxd.messaging.ui.core.CollectEvents
+import com.waxd.messaging.ui.core.MessagingPreviewTheme
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+
+@Composable
+internal fun ConversationSettingsScreen(
+    screenModel: ConversationSettingsScreenModel,
+    effectHandler: ConversationSettingsEffectHandler,
+    onNavigateBack: () -> Unit,
+    onCloseAfterArchive: () -> Unit,
+    onNavigateToConversation: (ConversationId) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val uiState by screenModel.uiState.collectAsStateWithLifecycle()
+    val rootConversationId = screenModel.rootConversationId
+
+    var currentRoute by rememberSaveable(
+        stateSaver = NavRouteSavedState.Saver,
+    ) {
+        mutableStateOf(NavRoute.Conversation)
+    }
+    val targetConversationId = currentRoute.targetConversationId(rootConversationId)
+
+    fun isRootRoute() = currentRoute is NavRoute.Conversation
+
+    LaunchedEffect(targetConversationId) {
+        screenModel.setConversationId(targetConversationId)
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        screenModel.refreshState()
+    }
+
+    CollectEvents(
+        events = screenModel.effects,
+        onEvent = effectHandler::handle,
+    )
+
+    val navigateUp: () -> Unit = {
+        when {
+            isRootRoute() -> onNavigateBack()
+            else -> currentRoute = NavRoute.Conversation
+        }
+    }
+
+    CollectEvents(events = screenModel.navigationEvents) { event ->
+        when (event) {
+            is NavEvent.OpenParticipantChat -> {
+                onNavigateToConversation(event.conversationId)
+            }
+
+            is NavEvent.OpenParticipantInfo -> {
+                currentRoute = NavRoute.ParticipantInfo(conversationId = event.conversationId)
+            }
+
+            NavEvent.CloseAfterArchive -> {
+                when {
+                    isRootRoute() -> onCloseAfterArchive()
+                    else -> navigateUp()
+                }
+            }
+        }
+    }
+
+    BackHandler(
+        enabled = !isRootRoute(),
+        onBack = navigateUp,
+    )
+
+    ConversationSettingsNavHost(
+        route = currentRoute,
+        rootConversationId = rootConversationId,
+        uiState = uiState,
+        onAction = screenModel::onAction,
+        onNavigateBack = navigateUp,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun ConversationSettingsNavHost(
+    route: NavRoute,
+    rootConversationId: ConversationId,
+    uiState: State,
+    onAction: (Action) -> Unit,
+    onNavigateBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val saveableStateHolder = rememberSaveableStateHolder()
+
+    AnimatedContent(
+        targetState = route,
+        modifier = modifier.background(MaterialTheme.colorScheme.background),
+        transitionSpec = {
+            horizontalSlideContentTransform(
+                isForward = targetState.depth > initialState.depth,
+            )
+        },
+        label = "conversation_settings_navigation",
+    ) { animatedRoute ->
+        saveableStateHolder.SaveableStateProvider(key = animatedRoute.saveableKey()) {
+            val displayed = rememberDisplayedConversation(
+                targetConversationId = animatedRoute.targetConversationId(rootConversationId),
+                uiState = uiState,
+            )
+
+            if (displayed != null) {
+                ConversationSettingsContent(
+                    uiState = displayed,
+                    onAction = onAction,
+                    onNavigateBack = onNavigateBack,
+                )
+            } else {
+                ConversationSettingsPlaceholder(
+                    onNavigateBack = onNavigateBack,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberDisplayedConversation(
+    targetConversationId: ConversationId,
+    uiState: State,
+): State? {
+    val current = uiState.takeIf { it.conversationId == targetConversationId }
+    var cached by remember(targetConversationId) { mutableStateOf(current) }
+    SideEffect {
+        if (current != null && cached != current) {
+            cached = current
+        }
+    }
+    return current ?: cached
+}
+
+@Composable
+private fun ConversationSettingsPlaceholder(
+    onNavigateBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        ConversationSettingsTopAppBar(
+            title = "",
+            participant = null,
+            onNavigateBack = onNavigateBack,
+            collapseProgress = { 0f },
+        )
+    }
+}
+
+@Composable
+private fun rememberCollapseProgress(
+    listState: LazyListState,
+): ComposeState<Float> {
+    return remember {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) {
+                return@derivedStateOf 1f
+            }
+
+            val headerInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+            if (headerInfo == null || headerInfo.size == 0) {
+                return@derivedStateOf 0f
+            }
+
+            val scrollOffset = listState.firstVisibleItemScrollOffset.toFloat()
+            (scrollOffset / headerInfo.size.toFloat()).coerceIn(0f, 1f)
+        }
+    }
+}
+
+@Composable
+private fun ConversationSettingsContent(
+    uiState: State,
+    onAction: (Action) -> Unit,
+    onNavigateBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var pendingBlockConfirmation by remember { mutableStateOf(false) }
+    var showSnoozeChatDialog by remember { mutableStateOf(false) }
+
+    val listState = rememberLazyListState()
+    val collapseProgress = rememberCollapseProgress(listState)
+
+    Scaffold(
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            ConversationSettingsTopAppBar(
+                title = uiState.conversationTitle,
+                participant = uiState.otherParticipant,
+                onNavigateBack = onNavigateBack,
+                collapseProgress = { collapseProgress.value },
+            )
+        },
+    ) { contentPadding ->
+        ConversationSettingsList(
+            uiState = uiState,
+            onAction = onAction,
+            listState = listState,
+            collapseProgress = { collapseProgress.value },
+            contentPadding = contentPadding,
+            onRequestBlockConfirmation = { pendingBlockConfirmation = true },
+            onRequestSnoozeChooser = { showSnoozeChatDialog = true },
+        )
+    }
+
+    ConversationSettingsDialogs(
+        uiState = uiState,
+        onAction = onAction,
+        pendingBlockConfirmation = pendingBlockConfirmation,
+        showSnoozeChatDialog = showSnoozeChatDialog,
+        onDismissBlockConfirmation = { pendingBlockConfirmation = false },
+        onDismissSnoozeChat = { showSnoozeChatDialog = false },
+    )
+}
+
+@Composable
+private fun ConversationSettingsList(
+    uiState: State,
+    onAction: (Action) -> Unit,
+    listState: LazyListState,
+    collapseProgress: () -> Float,
+    contentPadding: PaddingValues,
+    onRequestBlockConfirmation: () -> Unit,
+    onRequestSnoozeChooser: () -> Unit,
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = safeDrawingContentPadding(
+            top = contentPadding.calculateTopPadding(),
+            bottom = contentPadding.calculateBottomPadding() + ScreenContentPadding,
+            horizontal = ScreenContentPadding,
+        ),
+        verticalArrangement = Arrangement.spacedBy(SectionSpacing),
+    ) {
+        item(key = "header") {
+            ConversationHeader(
+                title = uiState.conversationTitle,
+                participant = uiState.otherParticipant,
+                collapseProgress = collapseProgress,
+            )
+        }
+
+        contactItems(
+            uiState = uiState,
+            onAction = onAction,
+        )
+
+        simSwitchItem(
+            uiState = uiState,
+            onAction = onAction,
+        )
+
+        generalSettingsItems(
+            uiState = uiState,
+            onAction = onAction,
+            onRequestBlockConfirmation = onRequestBlockConfirmation,
+            onRequestSnoozeChooser = onRequestSnoozeChooser,
+        )
+
+        participantsItems(
+            uiState = uiState,
+            onAction = onAction,
+        )
+    }
+}
+
+private fun LazyListScope.contactItems(
+    uiState: State,
+    onAction: (Action) -> Unit,
+) {
+    val participant = uiState.otherParticipant ?: return
+    if (!uiState.canCall && !uiState.canShowContact) return
+
+    item(key = "contact_buttons") {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(SectionSpacing),
+        ) {
+            if (uiState.canCall) {
+                val destination = participant.normalizedDestination.orEmpty()
+
+                ContactButtonItem(
+                    imageVector = Icons.Default.Call,
+                    text = stringResource(R.string.action_call),
+                    onClick = {
+                        onAction(ParticipantAction.ParticipantCallClicked(destination))
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (uiState.canShowContact) {
+                val (icon, textRes) = if (uiState.isContactSaved) {
+                    Icons.Default.Person to R.string.action_contact_info
+                } else {
+                    Icons.Default.PersonAdd to R.string.action_add_contact
+                }
+
+                ContactButtonItem(
+                    imageVector = icon,
+                    text = stringResource(textRes),
+                    onClick = {
+                        onAction(ParticipantAction.ParticipantContactInfoClicked(participant))
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContactButtonItem(
+    imageVector: ImageVector,
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            onClick = onClick,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = imageVector,
+                    contentDescription = text,
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun LazyListScope.generalSettingsItems(
+    uiState: State,
+    onAction: (Action) -> Unit,
+    onRequestBlockConfirmation: () -> Unit,
+    onRequestSnoozeChooser: () -> Unit,
+) {
+    item(key = "general_settings") {
+        GeneralSettingsCard(
+            uiState = uiState,
+            onAction = onAction,
+            onRequestSnoozeChooser = onRequestSnoozeChooser,
+        )
+    }
+
+    val otherParticipant = uiState.otherParticipant
+    if (otherParticipant != null) {
+        val titleRes = if (otherParticipant.isBlocked) {
+            R.string.unblock_contact_title
+        } else {
+            R.string.block_contact_title
+        }
+
+        item(key = "block") {
+            val displayDestination = otherParticipant.displayDestination.orEmpty().asLtrText()
+
+            ConversationSettingsItem(
+                icon = Icons.Default.Block,
+                title = stringResource(titleRes, displayDestination),
+                onClick = {
+                    if (otherParticipant.isBlocked) {
+                        onAction(Action.UnblockClicked)
+                    } else {
+                        onRequestBlockConfirmation()
+                    }
+                },
+                contentColor = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GeneralSettingsCard(
+    uiState: State,
+    onAction: (Action) -> Unit,
+    onRequestSnoozeChooser: () -> Unit,
+) {
+    val snoozeTitleRes = if (uiState.isSnoozed) {
+        R.string.unsnooze_chat_setting_title
+    } else {
+        R.string.snooze_chat_setting_title
+    }
+
+    val (archiveIcon, archiveTitleRes) = if (uiState.isArchived) {
+        Icons.Default.Unarchive to R.string.action_unarchive
+    } else {
+        Icons.Default.Archive to R.string.action_archive
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(GroupedItemSpacing)) {
+        ConversationSettingsItem(
+            icon = Icons.Default.Snooze,
+            title = stringResource(snoozeTitleRes),
+            onClick = {
+                if (uiState.isSnoozed) {
+                    onAction(Action.UnsnoozeClicked)
+                } else {
+                    onRequestSnoozeChooser()
+                }
+            },
+            shape = MaterialTheme.groupedTopItemShape,
+        )
+
+        ConversationSettingsItem(
+            icon = Icons.Default.Notifications,
+            title = stringResource(R.string.notifications_enabled_conversation_pref_title),
+            onClick = { onAction(Action.NotificationsClicked) },
+            shape = MaterialTheme.groupedMiddleItemShape,
+        )
+
+        ConversationSettingsItem(
+            icon = archiveIcon,
+            title = stringResource(archiveTitleRes),
+            onClick = {
+                if (uiState.isArchived) {
+                    onAction(Action.UnarchiveClicked)
+                } else {
+                    onAction(Action.ArchiveClicked)
+                }
+            },
+            shape = MaterialTheme.groupedBottomItemShape,
+        )
+    }
+}
+
+private fun LazyListScope.participantsItems(
+    uiState: State,
+    onAction: (Action) -> Unit,
+) {
+    val participants = uiState.participants
+    if (participants.isEmpty()) return
+
+    val isGroup = participants.size > 1
+
+    item(key = "participants_group") {
+        ParticipantsCard(
+            participants = participants,
+            isGroup = isGroup,
+            onAction = onAction,
+        )
+    }
+}
+
+@Composable
+private fun ParticipantsCard(
+    participants: ImmutableList<ParticipantUiState>,
+    isGroup: Boolean,
+    onAction: (Action) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.settingsCardShape,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            Text(
+                text = stringResource(R.string.participant_list_title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(
+                    horizontal = 16.dp,
+                    vertical = 6.dp,
+                ),
+            )
+            participants.forEach { participant ->
+                val destination = participant.normalizedDestination.orEmpty()
+                val hasDestination = destination.isNotEmpty()
+                key(participant.id) {
+                    ParticipantItem(
+                        participant = participant,
+                        onClick = {
+                            if (hasDestination) {
+                                onAction(ParticipantAction.ParticipantPressed(destination))
+                            }
+                        },
+                        onLongClick = {
+                            if (hasDestination) {
+                                onAction(ParticipantAction.ParticipantLongPressed(destination))
+                            }
+                        },
+                        onCallClick = {
+                            onAction(ParticipantAction.ParticipantCallClicked(destination))
+                        }.takeIf { participant.canCall },
+                        onContactClick = {
+                            onAction(ParticipantAction.ParticipantContactInfoClicked(participant))
+                        }.takeIf { hasDestination },
+                        onAction = {
+                            onAction(ParticipantAction.ParticipantActionPressed(destination))
+                        }.takeIf { hasDestination && isGroup },
+                        modifier = Modifier
+                            .testTag(
+                                tag = conversationSettingsParticipantRowTestTag(
+                                    participant.id,
+                                ),
+                            ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@PreviewLightDark
+@Composable
+private fun ConversationSettingsContentPreview() {
+    MessagingPreviewTheme {
+        ConversationSettingsContent(
+            uiState = State(
+                conversationId = ConversationId("1"),
+                conversationTitle = "Family",
+                participants = persistentListOf(
+                    ParticipantUiState(
+                        id = ParticipantId("p1"),
+                        avatarUri = null,
+                        displayName = "Mother",
+                        details = "+31 6 1234 5678",
+                        contactId = 1L,
+                        lookupKey = null,
+                        normalizedDestination = "+31612345678",
+                        isBlocked = false,
+                        displayDestination = "+31 6 1234 5678",
+                        canCall = true,
+                        isContactSaved = true,
+                    ),
+                    ParticipantUiState(
+                        id = ParticipantId("p2"),
+                        avatarUri = null,
+                        displayName = "Father",
+                        details = "+31 6 8765 4321",
+                        contactId = 2L,
+                        lookupKey = null,
+                        normalizedDestination = "+31687654321",
+                        isBlocked = false,
+                        displayDestination = "+31 6 8765 4321",
+                        canCall = true,
+                        isContactSaved = true,
+                    ),
+                ),
+            ),
+            onAction = {},
+            onNavigateBack = {},
+        )
+    }
+}
+
+@PreviewLightDark
+@Composable
+private fun ContactButtonItemPreview() {
+    MessagingPreviewTheme {
+        Row(horizontalArrangement = Arrangement.spacedBy(SectionSpacing)) {
+            ContactButtonItem(
+                imageVector = Icons.Default.Call,
+                text = "Call",
+                onClick = {},
+                modifier = Modifier.weight(1f),
+            )
+            ContactButtonItem(
+                imageVector = Icons.Default.Person,
+                text = "Contact info",
+                onClick = {},
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}

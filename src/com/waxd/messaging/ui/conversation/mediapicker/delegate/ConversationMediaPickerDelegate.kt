@@ -1,0 +1,395 @@
+package com.waxd.messaging.ui.conversation.mediapicker.delegate
+
+import com.waxd.messaging.R
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.draft.ConversationDraftAttachment
+import com.waxd.messaging.data.conversation.model.draft.PhotoPickerDraftAttachment
+import com.waxd.messaging.data.media.model.ConversationCapturedMedia
+import com.waxd.messaging.data.media.model.PhotoPickerDraftAttachmentResult
+import com.waxd.messaging.data.media.repository.ConversationAttachmentsRepository
+import com.waxd.messaging.di.core.DefaultDispatcher
+import com.waxd.messaging.ui.conversation.composer.delegate.ConversationDraftDelegate
+import com.waxd.messaging.ui.conversation.mediapicker.mapper.ConversationDraftAttachmentMapper
+import com.waxd.messaging.ui.conversation.screen.model.ConversationScreenEffect
+import com.waxd.messaging.util.LogUtil
+import javax.inject.Inject
+import kotlinx.collections.immutable.ImmutableMap
+import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.collections.immutable.toPersistentMap
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+
+internal interface ConversationMediaPickerDelegate {
+    val effects: Flow<ConversationScreenEffect>
+    val photoPickerSourceContentUriByAttachmentContentUri: StateFlow<ImmutableMap<String, String>>
+
+    fun bind(
+        scope: CoroutineScope,
+        conversationIdFlow: StateFlow<ConversationId?>,
+    )
+
+    fun onPhotoPickerMediaSelected(contentUris: List<String>)
+
+    fun onPhotoPickerMediaDeselected(contentUris: List<String>)
+
+    fun onCapturedMediaReady(capturedMedia: ConversationCapturedMedia)
+
+    fun onContactCardPicked(contactUri: String?)
+
+    fun onRemovePendingAttachment(pendingAttachmentId: String)
+
+    fun onRemoveResolvedAttachment(contentUri: String)
+
+    fun onScreenCleared()
+}
+
+internal class ConversationMediaPickerDelegateImpl @Inject constructor(
+    private val conversationDraftDelegate: ConversationDraftDelegate,
+    private val conversationAttachmentsRepository: ConversationAttachmentsRepository,
+    private val conversationDraftAttachmentMapper: ConversationDraftAttachmentMapper,
+    @param:DefaultDispatcher
+    private val defaultDispatcher: CoroutineDispatcher,
+) : ConversationMediaPickerDelegate {
+
+    private val _effects = MutableSharedFlow<ConversationScreenEffect>(
+        extraBufferCapacity = 1,
+    )
+    private val photoPickerAttachmentLock = Any()
+
+    private val photoPickerContentUris = mutableSetOf<String>()
+    private val attachmentContentUriByPhotoPickerContentUri = mutableMapOf<String, String>()
+    private val photoPickerContentUriByAttachmentContentUri = mutableMapOf<String, String>()
+    private val _photoPickerSourceContentUriByAttachmentContentUri =
+        MutableStateFlow<ImmutableMap<String, String>>(persistentMapOf())
+
+    override val effects = _effects.asSharedFlow()
+    override val photoPickerSourceContentUriByAttachmentContentUri =
+        _photoPickerSourceContentUriByAttachmentContentUri.asStateFlow()
+
+    private var boundScope: CoroutineScope? = null
+
+    override fun bind(
+        scope: CoroutineScope,
+        conversationIdFlow: StateFlow<ConversationId?>,
+    ) {
+        if (boundScope != null) {
+            return
+        }
+
+        boundScope = scope
+
+        scope.launch(defaultDispatcher) {
+            conversationIdFlow
+                .drop(count = 1)
+                .collect {
+                    cancelPendingAttachmentJobs()
+                }
+        }
+    }
+
+    override fun onPhotoPickerMediaSelected(contentUris: List<String>) {
+        val claimedContentUris = claimNewPhotoPickerContentUris(contentUris = contentUris)
+
+        if (claimedContentUris.isEmpty()) {
+            return
+        }
+
+        if (!conversationDraftDelegate.tryStartAddingAttachment()) {
+            releasePhotoPickerContentUris(contentUris = claimedContentUris)
+            return
+        }
+
+        launchPhotoPickerAttachmentResolution(contentUris = claimedContentUris)
+    }
+
+    private fun claimNewPhotoPickerContentUris(contentUris: List<String>): List<String> {
+        return synchronized(photoPickerAttachmentLock) {
+            contentUris.filter { contentUri ->
+                contentUri.isNotBlank() && photoPickerContentUris.add(contentUri)
+            }
+        }
+    }
+
+    private fun launchPhotoPickerAttachmentResolution(contentUris: List<String>) {
+        boundScope?.launch(defaultDispatcher) {
+            conversationAttachmentsRepository
+                .createDraftAttachmentsFromPhotoPicker(contentUris = contentUris)
+                .catch { throwable ->
+                    handlePhotoPickerAttachmentResolutionException(
+                        contentUris = contentUris,
+                        throwable = throwable,
+                    )
+                }
+                .collect { result ->
+                    handlePhotoPickerAttachmentResult(result = result)
+                }
+        }
+    }
+
+    private suspend fun handlePhotoPickerAttachmentResolutionException(
+        contentUris: List<String>,
+        throwable: Throwable,
+    ) {
+        if (throwable is CancellationException) {
+            throw throwable
+        }
+
+        LogUtil.w(TAG, "Unable to resolve photo picker attachments", throwable)
+
+        releasePhotoPickerContentUris(contentUris = contentUris)
+        emitAttachmentLoadFailedEffect()
+    }
+
+    private suspend fun handlePhotoPickerAttachmentResult(
+        result: PhotoPickerDraftAttachmentResult,
+    ) {
+        when (result) {
+            is PhotoPickerDraftAttachmentResult.Resolved -> {
+                onPhotoPickerAttachmentResolved(result.photoPickerDraftAttachment)
+            }
+
+            is PhotoPickerDraftAttachmentResult.Failed -> {
+                val wasSelected = releasePhotoPickerContentUri(result.sourceContentUri)
+
+                if (wasSelected) {
+                    emitAttachmentLoadFailedEffect()
+                }
+            }
+        }
+    }
+
+    private fun onPhotoPickerAttachmentResolved(
+        photoPickerAttachment: PhotoPickerDraftAttachment,
+    ) {
+        val sourceContentUri = photoPickerAttachment.sourceContentUri
+        val draftAttachment = photoPickerAttachment.draftAttachment
+
+        if (!isPhotoPickerContentUriSelected(contentUri = sourceContentUri)) {
+            deleteTemporaryAttachment(contentUri = draftAttachment.contentUri)
+            return
+        }
+
+        val wasAddedToDraft = addDraftAttachmentIfAccepted(draftAttachment = draftAttachment)
+        val wasRegistered = wasAddedToDraft && registerPhotoPickerAttachmentIfStillSelected(
+            photoPickerAttachment = photoPickerAttachment,
+        )
+
+        if (!wasRegistered) {
+            discardUnregisteredPhotoPickerAttachment(
+                sourceContentUri = sourceContentUri,
+                attachmentContentUri = draftAttachment.contentUri,
+                wasAddedToDraft = wasAddedToDraft,
+            )
+        }
+    }
+
+    private fun isPhotoPickerContentUriSelected(contentUri: String): Boolean {
+        return synchronized(photoPickerAttachmentLock) {
+            photoPickerContentUris.contains(contentUri)
+        }
+    }
+
+    private fun addDraftAttachmentIfAccepted(
+        draftAttachment: ConversationDraftAttachment,
+    ): Boolean {
+        val acceptedAttachments = conversationDraftDelegate.addAttachments(
+            attachments = listOf(draftAttachment),
+        )
+
+        return acceptedAttachments.any { acceptedAttachment ->
+            acceptedAttachment.contentUri == draftAttachment.contentUri
+        }
+    }
+
+    private fun registerPhotoPickerAttachmentIfStillSelected(
+        photoPickerAttachment: PhotoPickerDraftAttachment,
+    ): Boolean {
+        return synchronized(photoPickerAttachmentLock) {
+            if (!photoPickerContentUris.contains(photoPickerAttachment.sourceContentUri)) {
+                return@synchronized false
+            }
+
+            registerPhotoPickerAttachment(photoPickerAttachment)
+            true
+        }
+    }
+
+    private fun discardUnregisteredPhotoPickerAttachment(
+        sourceContentUri: String,
+        attachmentContentUri: String,
+        wasAddedToDraft: Boolean,
+    ) {
+        releasePhotoPickerContentUri(sourceContentUri)
+
+        if (wasAddedToDraft) {
+            conversationDraftDelegate.removeAttachment(attachmentContentUri)
+        }
+
+        deleteTemporaryAttachment(attachmentContentUri)
+    }
+
+    private fun releasePhotoPickerContentUri(contentUri: String): Boolean {
+        return synchronized(photoPickerAttachmentLock) {
+            photoPickerContentUris.remove(contentUri)
+        }
+    }
+
+    private fun releasePhotoPickerContentUris(contentUris: List<String>) {
+        synchronized(photoPickerAttachmentLock) {
+            photoPickerContentUris.removeAll(contentUris.toSet())
+        }
+    }
+
+    private suspend fun emitAttachmentLoadFailedEffect() {
+        _effects.emit(
+            ConversationScreenEffect.ShowMessage(
+                messageResId = R.string.fail_to_load_attachment,
+            ),
+        )
+    }
+
+    override fun onPhotoPickerMediaDeselected(contentUris: List<String>) {
+        contentUris
+            .filter { it.isNotBlank() }
+            .forEach { photoPickerContentUri ->
+                val attachmentContentUri = synchronized(photoPickerAttachmentLock) {
+                    val registeredContentUri = unregisterPhotoPickerAttachmentByPickerUri(
+                        photoPickerContentUri = photoPickerContentUri,
+                    )
+
+                    photoPickerContentUris.remove(photoPickerContentUri)
+
+                    registeredContentUri
+                } ?: photoPickerContentUri
+
+                conversationDraftDelegate.removeAttachment(attachmentContentUri)
+                deleteTemporaryAttachment(attachmentContentUri)
+            }
+    }
+
+    override fun onCapturedMediaReady(capturedMedia: ConversationCapturedMedia) {
+        val attachment = conversationDraftAttachmentMapper.map(capturedMedia)
+
+        val acceptedAttachments = conversationDraftDelegate.addAttachments(
+            attachments = listOf(attachment),
+        )
+
+        val wasAccepted = acceptedAttachments.any { acceptedAttachment ->
+            acceptedAttachment.contentUri == attachment.contentUri
+        }
+
+        if (!wasAccepted) {
+            deleteTemporaryAttachment(attachment.contentUri)
+        }
+    }
+
+    override fun onContactCardPicked(contactUri: String?) {
+        val resolvedContactUri = contactUri?.takeIf { it.isNotBlank() } ?: return
+
+        boundScope?.launch(defaultDispatcher) {
+            conversationAttachmentsRepository
+                .createDraftAttachmentFromContact(contactUri = resolvedContactUri)
+                .filterNotNull()
+                .map(::listOf)
+                .collect(conversationDraftDelegate::addAttachments)
+        }
+    }
+
+    override fun onRemovePendingAttachment(pendingAttachmentId: String) {
+        conversationDraftDelegate.removePendingAttachment(
+            pendingAttachmentId = pendingAttachmentId,
+        )
+    }
+
+    override fun onRemoveResolvedAttachment(contentUri: String) {
+        conversationDraftDelegate.removeAttachment(contentUri = contentUri)
+
+        deleteTemporaryAttachment(contentUri = contentUri)
+
+        synchronized(photoPickerAttachmentLock) {
+            unregisterPhotoPickerAttachmentByAttachmentUri(
+                attachmentContentUri = contentUri,
+            )?.also { photoPickerContentUri ->
+                photoPickerContentUris.remove(photoPickerContentUri)
+            }
+        }
+    }
+
+    override fun onScreenCleared() {
+        cancelPendingAttachmentJobs()
+    }
+
+    private fun cancelPendingAttachmentJobs() {
+        synchronized(photoPickerAttachmentLock) {
+            photoPickerContentUris.clear()
+            attachmentContentUriByPhotoPickerContentUri.clear()
+            photoPickerContentUriByAttachmentContentUri.clear()
+            publishPhotoPickerSourceContentUrisLocked()
+        }
+    }
+
+    private fun registerPhotoPickerAttachment(photoPickerAttachment: PhotoPickerDraftAttachment) {
+        val sourceContentUri = photoPickerAttachment.sourceContentUri
+        val attachmentContentUri = photoPickerAttachment.draftAttachment.contentUri
+
+        attachmentContentUriByPhotoPickerContentUri[sourceContentUri] = attachmentContentUri
+        photoPickerContentUriByAttachmentContentUri[attachmentContentUri] = sourceContentUri
+        publishPhotoPickerSourceContentUrisLocked()
+    }
+
+    private fun unregisterPhotoPickerAttachmentByPickerUri(
+        photoPickerContentUri: String,
+    ): String? {
+        val attachmentContentUri = attachmentContentUriByPhotoPickerContentUri
+            .remove(photoPickerContentUri)
+            ?: return null
+
+        photoPickerContentUriByAttachmentContentUri.remove(attachmentContentUri)
+        publishPhotoPickerSourceContentUrisLocked()
+
+        return attachmentContentUri
+    }
+
+    private fun unregisterPhotoPickerAttachmentByAttachmentUri(
+        attachmentContentUri: String,
+    ): String? {
+        val photoPickerContentUri = photoPickerContentUriByAttachmentContentUri
+            .remove(attachmentContentUri)
+            ?: return null
+
+        attachmentContentUriByPhotoPickerContentUri.remove(photoPickerContentUri)
+        publishPhotoPickerSourceContentUrisLocked()
+
+        return photoPickerContentUri
+    }
+
+    private fun publishPhotoPickerSourceContentUrisLocked() {
+        _photoPickerSourceContentUriByAttachmentContentUri.value =
+            photoPickerContentUriByAttachmentContentUri.toPersistentMap()
+    }
+
+    private fun deleteTemporaryAttachment(contentUri: String) {
+        boundScope?.launch(defaultDispatcher) {
+            conversationAttachmentsRepository
+                .deleteTemporaryAttachment(contentUri = contentUri)
+                .collect()
+        }
+    }
+
+    private companion object {
+        private const val TAG = "ConversationMediaPickerDelegate"
+    }
+}

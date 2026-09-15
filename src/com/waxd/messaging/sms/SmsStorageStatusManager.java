@@ -1,0 +1,109 @@
+/*
+ * Copyright (C) 2015 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.waxd.messaging.sms;
+
+import android.app.Notification;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.res.Resources;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+
+import com.waxd.messaging.Factory;
+import com.waxd.messaging.R;
+import com.waxd.messaging.ui.UIIntents;
+import com.waxd.messaging.util.NotificationChannelUtil;
+import com.waxd.messaging.util.PendingIntentConstants;
+import com.waxd.messaging.util.PhoneUtils;
+
+/**
+ * Class that handles SMS storage warnings.
+ */
+public class SmsStorageStatusManager {
+    /**
+     * Handles storage low signal for SMS
+     */
+    public static void handleStorageLow() {
+        handleStorageWarning();
+    }
+
+    /**
+     * Handles a full Messaging database.
+     */
+    public static void handleStorageFull() {
+        handleStorageWarning();
+    }
+
+    /**
+     * Handles storage OK signal for SMS
+     */
+    public static void handleStorageOk() {
+        cancelStorageLowNotification();
+    }
+
+    private static void handleStorageWarning() {
+        if (!PhoneUtils.getDefault().isSmsEnabled()) {
+            return;
+        }
+        postStorageLowNotification();
+    }
+
+    /**
+     * Post sms storage low notification
+     */
+    private static void postStorageLowNotification() {
+        final Context context = Factory.get().getApplicationContext();
+        final Resources resources = context.getResources();
+        final PendingIntent pendingIntent = UIIntents.get()
+                .getPendingIntentForLowStorageNotifications(context);
+
+        final NotificationCompat.Builder builder =
+                new NotificationCompat.Builder(context, NotificationChannelUtil.ALERTS_CHANNEL);
+        builder.setContentTitle(resources.getString(R.string.sms_storage_low_title))
+                .setContentText(resources.getString(R.string.sms_storage_low_text))
+                .setTicker(resources.getString(R.string.sms_storage_low_notification_ticker))
+                .setSmallIcon(R.drawable.ic_sms_light)
+                .setPriority(Notification.PRIORITY_DEFAULT)
+                .setOngoing(false)
+                .setAutoCancel(false)
+                .setContentIntent(pendingIntent);
+
+        final NotificationCompat.BigTextStyle bigTextStyle =
+                new NotificationCompat.BigTextStyle(builder);
+        bigTextStyle.bigText(resources.getString(R.string.sms_storage_low_text));
+        final Notification notification = bigTextStyle.build();
+
+        final NotificationManagerCompat notificationManager =
+                NotificationManagerCompat.from(Factory.get().getApplicationContext());
+
+        notificationManager.notify(getNotificationTag(),
+                PendingIntentConstants.SMS_STORAGE_LOW_NOTIFICATION_ID, notification);
+    }
+
+    /**
+     * Cancel the notification
+     */
+    public static void cancelStorageLowNotification() {
+        final NotificationManagerCompat notificationManager =
+                NotificationManagerCompat.from(Factory.get().getApplicationContext());
+        notificationManager.cancel(getNotificationTag(),
+                PendingIntentConstants.SMS_STORAGE_LOW_NOTIFICATION_ID);
+    }
+
+    private static String getNotificationTag() {
+        return Factory.get().getApplicationContext().getPackageName() + ":smsstoragelow";
+    }
+}

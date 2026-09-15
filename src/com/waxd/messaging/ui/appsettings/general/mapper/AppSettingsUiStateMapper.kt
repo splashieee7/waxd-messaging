@@ -1,0 +1,32 @@
+package com.waxd.messaging.ui.appsettings.general.mapper
+
+import android.content.Context
+import com.waxd.messaging.R
+import com.waxd.messaging.data.appsettings.model.AppSettings
+import com.waxd.messaging.ui.appsettings.general.model.AppSettingsUiState
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+
+internal interface AppSettingsUiStateMapper {
+    fun map(appSettings: AppSettings): AppSettingsUiState
+}
+
+internal class AppSettingsUiStateMapperImpl @Inject constructor(
+    @param:ApplicationContext private val context: Context,
+) : AppSettingsUiStateMapper {
+
+    override fun map(appSettings: AppSettings): AppSettingsUiState {
+        return AppSettingsUiState(
+            isDefaultSmsApp = appSettings.isDefaultSmsApp,
+            defaultSmsAppLabel = context.getString(
+                R.string.default_sms_app,
+                appSettings.defaultSmsAppLabel,
+            ),
+            sendSoundEnabled = appSettings.sendSoundEnabled,
+            youTubeLinkPreviewsEnabled = appSettings.youTubeLinkPreviewsEnabled,
+            isDebugEnabled = appSettings.isDebugEnabled,
+            dumpSmsEnabled = appSettings.dumpSmsEnabled,
+            dumpMmsEnabled = appSettings.dumpMmsEnabled,
+        )
+    }
+}

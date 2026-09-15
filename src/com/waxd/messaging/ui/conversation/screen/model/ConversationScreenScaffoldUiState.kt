@@ -1,0 +1,25 @@
+package com.waxd.messaging.ui.conversation.screen.model
+
+import androidx.compose.runtime.Immutable
+import com.waxd.messaging.ui.conversation.composer.model.ConversationComposerUiState
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessagesUiState
+import com.waxd.messaging.ui.conversation.metadata.model.ConversationMetadataUiState
+
+@Immutable
+internal data class ConversationScreenScaffoldUiState(
+    val canAddPeople: Boolean = false,
+    val canCall: Boolean = false,
+    val canArchive: Boolean = false,
+    val canUnarchive: Boolean = false,
+    val canAddContact: Boolean = false,
+    val canDeleteConversation: Boolean = false,
+    val canEditSubject: Boolean = false,
+    val isBlocked: Boolean = false,
+    val attachmentLimitWarning: ConversationAttachmentLimitWarning? = null,
+    val isDeleteConversationConfirmationVisible: Boolean = false,
+    val isSubjectDialogVisible: Boolean = false,
+    val metadata: ConversationMetadataUiState = ConversationMetadataUiState.Loading,
+    val messages: ConversationMessagesUiState = ConversationMessagesUiState.Loading,
+    val composer: ConversationComposerUiState = ConversationComposerUiState(),
+    val selection: ConversationMessageSelectionUiState = ConversationMessageSelectionUiState(),
+)

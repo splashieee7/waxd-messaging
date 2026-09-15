@@ -1,0 +1,2104 @@
+@file:JvmName("TestDataSeeder")
+
+package com.waxd.messaging.debug
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.net.Uri
+import androidx.core.graphics.createBitmap
+import androidx.core.net.toUri
+import com.waxd.messaging.data.subscription.repository.SubscriptionsRepository
+import com.waxd.messaging.datamodel.DataModel
+import com.waxd.messaging.datamodel.DatabaseHelper
+import com.waxd.messaging.datamodel.DatabaseHelper.ConversationColumns
+import com.waxd.messaging.datamodel.DatabaseHelper.ConversationParticipantsColumns
+import com.waxd.messaging.datamodel.DatabaseHelper.MessageColumns
+import com.waxd.messaging.datamodel.DatabaseHelper.PartColumns
+import com.waxd.messaging.datamodel.DatabaseHelper.ParticipantColumns
+import com.waxd.messaging.datamodel.DatabaseWrapper
+import com.waxd.messaging.datamodel.MediaScratchFileProvider
+import com.waxd.messaging.datamodel.MessagingContentProvider
+import com.waxd.messaging.datamodel.data.MessageData
+import com.waxd.messaging.datamodel.data.ParticipantData
+import com.waxd.messaging.util.ContentType
+import com.waxd.messaging.util.LogUtil
+import com.waxd.messaging.util.db.ext.withTransaction
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
+import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.util.Base64
+import kotlin.math.PI
+import kotlin.math.sin
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+
+private const val TAG = "TestDataSeeder"
+private const val TEST_PHONE_PREFIX = "+15550"
+private const val TEST_YOUTUBE_VIDEO_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+private const val TEST_LINK_MESSAGE_URL = "https://grapheneos.org"
+private const val MEDIA_SCRATCH_FILE_EXTENSION_QUERY_PARAMETER = "ext"
+private const val SEED_IMAGE_1_FILE_ID = "800001"
+private const val SEED_IMAGE_2_FILE_ID = "800002"
+private const val SEED_IMAGE_3_FILE_ID = "800003"
+private const val SEED_CONTACT_VCARD_FILE_ID = "800004"
+private const val SEED_VIDEO_FILE_ID = "800005"
+private const val SEED_AUDIO_FILE_ID = "800006"
+private const val SEED_LOCATION_VCARD_FILE_ID = "800007"
+private const val SEED_ANIMATED_GIF_FILE_ID = "800008"
+private const val SEED_AUDIO_DURATION_SECONDS = 2
+private const val SEED_AUDIO_SAMPLE_RATE_HZ = 16_000
+private const val SEED_AUDIO_FREQUENCY_HZ = 440.0
+private const val SEED_ANIMATED_GIF_WIDTH = 96
+private const val SEED_ANIMATED_GIF_HEIGHT = 96
+
+private const val MINUTES = 60 * 1000L
+private const val HOURS = 60 * MINUTES
+private const val DAYS = 24 * HOURS
+
+private data class SeedVCards(
+    val contactUri: String,
+    val locationUri: String,
+)
+
+@EntryPoint
+@InstallIn(SingletonComponent::class)
+private interface SeedSubscriptionsEntryPoint {
+    fun subscriptionsRepository(): SubscriptionsRepository
+}
+
+fun seedTestData(context: Context) {
+    clearSeededTestData(context = context)
+
+    val db = DataModel.get().getDatabase()
+
+    val selfId = findSelfParticipantId(db) ?: run {
+        LogUtil.w(TAG, "No self participant found — open the app at least once before seeding")
+        return
+    }
+
+    val (simAId, simBId) = resolveDualSimSelfIds(context = context)
+
+    val testImages = buildTestImages(context)
+    val testAnimatedGif = buildTestAnimatedGif()
+    val testAudio = buildTestAudio()
+    val testVideo = buildTestVideo(context)
+    val testVCards = buildTestVCards()
+    val now = System.currentTimeMillis()
+
+    db.withTransaction {
+        val alice = upsertParticipant(db, "${TEST_PHONE_PREFIX}001234", "Alice Wonderland", "Alice")
+        val bob = upsertParticipant(db, "${TEST_PHONE_PREFIX}005678", "Bob Baker", "Bob")
+        val carol = upsertParticipant(db, "${TEST_PHONE_PREFIX}002345", "Carol Chen", "Carol")
+        val dave = upsertParticipant(db, "${TEST_PHONE_PREFIX}003456", "Dave Diaz", "Dave")
+        val eve = upsertParticipant(db, "${TEST_PHONE_PREFIX}004567", "Eve Evans", "Eve")
+        val frank = upsertParticipant(db, "${TEST_PHONE_PREFIX}006789", "Frank Ford", "Frank")
+        val grace = upsertParticipant(db, "${TEST_PHONE_PREFIX}007890", "Grace Green", "Grace")
+        val henry = upsertParticipant(db, "${TEST_PHONE_PREFIX}008901", "Henry Hall", "Henry")
+        val iris = upsertParticipant(db, "${TEST_PHONE_PREFIX}009012", "Iris Ingram", "Iris")
+        val jack = upsertParticipant(db, "${TEST_PHONE_PREFIX}010123", "Jack Johnson", "Jack")
+        val kim = upsertParticipant(db, "${TEST_PHONE_PREFIX}011234", "Kim Kelly", "Kim")
+        val liam = upsertParticipant(db, "${TEST_PHONE_PREFIX}012345", "Liam Lewis", "Liam")
+        val mia = upsertParticipant(db, "${TEST_PHONE_PREFIX}013456", "Mia Miller", "Mia")
+        val noah = upsertParticipant(db, "${TEST_PHONE_PREFIX}014567", "Noah Nguyen", "Noah")
+        val olivia = upsertParticipant(db, "${TEST_PHONE_PREFIX}015678", "Olivia Ortega", "Olivia")
+        val nora = upsertParticipant(db, "${TEST_PHONE_PREFIX}016789", "Nora Notifications", "Nora")
+
+        seedScenarioA(db, selfId, alice, now)
+        seedScenarioB(db, selfId, bob, now)
+        seedScenarioC(db, selfId, carol, dave, eve, now)
+        seedScenarioD(db, selfId, frank, now)
+        seedScenarioE(db, selfId, grace, now)
+        seedScenarioF(db, selfId, henry, now)
+        seedScenarioG(db, selfId, iris, testImages, now)
+        seedScenarioH(
+            db = db,
+            selfId = selfId,
+            jackId = jack,
+            carolId = carol,
+            images = testImages,
+            animatedGifUri = testAnimatedGif,
+            audioUri = testAudio,
+            videoUri = testVideo,
+            vCards = testVCards,
+            now = now,
+        )
+        seedScenarioI(db, selfId, carol, dave, eve, now)
+        seedScenarioJ(db, selfId, kim, testImages, now)
+        seedScenarioK(db, selfId, liam, mia, noah, testImages, now)
+        if (simAId != null && simBId != null) {
+            seedScenarioL(
+                db = db,
+                realSelfId = selfId,
+                simAId = simAId,
+                simBId = simBId,
+                oliviaId = olivia,
+                now = now,
+            )
+        }
+        seedScenarioM(
+            db = db,
+            realSelfId = selfId,
+            secondarySelfId = simBId ?: selfId,
+            noraId = nora,
+            now = now,
+        )
+    }
+
+    MessagingContentProvider.notifyConversationListChanged()
+    LogUtil.d(TAG, "Test data seeded successfully")
+}
+
+private fun resolveDualSimSelfIds(context: Context): Pair<String?, String?> {
+    DebugSimEmulationStore.setMode(mode = DebugSimEmulationMode.DUAL)
+
+    val repository = EntryPointAccessors
+        .fromApplication(
+            context.applicationContext,
+            SeedSubscriptionsEntryPoint::class.java,
+        )
+        .subscriptionsRepository()
+
+    val subscriptions = runCatching {
+        runBlocking {
+            repository.observeActiveSubscriptions().first { it.size >= 2 }
+        }
+    }.getOrElse { throwable ->
+        LogUtil.w(TAG, "Failed to resolve dual SIM subscriptions for seeding", throwable)
+        return null to null
+    }
+
+    return subscriptions[0].selfParticipantId.value to subscriptions[1].selfParticipantId.value
+}
+
+fun clearSeededTestData(context: Context) {
+    val db = DataModel.get().getDatabase()
+    val seededAttachmentUris = mutableSetOf<String>()
+
+    db.withTransaction {
+        val participantIds = mutableListOf<String>()
+        db.query(
+            DatabaseHelper.PARTICIPANTS_TABLE,
+            arrayOf(ParticipantColumns._ID),
+            "${ParticipantColumns.NORMALIZED_DESTINATION} LIKE ?",
+            arrayOf("$TEST_PHONE_PREFIX%"),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) participantIds.add(cursor.getString(0))
+        }
+
+        if (participantIds.isEmpty()) {
+            db.setTransactionSuccessful()
+            return
+        }
+
+        val pPlaceholders = participantIds.joinToString(",") { "?" }
+        val pArgs = participantIds.toTypedArray()
+
+        val conversationIds = mutableListOf<String>()
+        db.query(
+            DatabaseHelper.CONVERSATION_PARTICIPANTS_TABLE,
+            arrayOf(ConversationParticipantsColumns.CONVERSATION_ID),
+            "${ConversationParticipantsColumns.PARTICIPANT_ID} IN ($pPlaceholders)",
+            pArgs,
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) conversationIds.add(cursor.getString(0))
+        }
+
+        if (conversationIds.isNotEmpty()) {
+            val conversationIdArgs = conversationIds.toTypedArray()
+            db.query(
+                DatabaseHelper.PARTS_TABLE,
+                arrayOf(PartColumns.CONTENT_URI),
+                "${PartColumns.CONVERSATION_ID} IN (${conversationIds.joinToString(",") { "?" }})" +
+                    " AND ${PartColumns.CONTENT_URI} IS NOT NULL",
+                conversationIdArgs,
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    cursor.getString(0)?.let { attachmentUri ->
+                        seededAttachmentUris.add(attachmentUri)
+                    }
+                }
+            }
+
+            // ON DELETE CASCADE handles messages and parts
+            db.delete(
+                DatabaseHelper.CONVERSATIONS_TABLE,
+                "${ConversationColumns._ID} IN (${conversationIds.joinToString(",") { "?" }})",
+                conversationIdArgs,
+            )
+        }
+
+        db.delete(
+            DatabaseHelper.PARTICIPANTS_TABLE,
+            "${ParticipantColumns._ID} IN ($pPlaceholders)",
+            pArgs,
+        )
+    }
+
+    // Also clean up the image files from cache
+    for (i in 1..3) {
+        File(context.cacheDir, "seed_img_$i.jpg").delete()
+    }
+    File(context.cacheDir, "seed_video.mp4").delete()
+    File(context.cacheDir, "seed_contact.vcf").delete()
+    deleteSeedScratchFile(fileId = SEED_AUDIO_FILE_ID, fileExtension = "wav")
+    deleteSeedScratchFile(fileId = SEED_IMAGE_1_FILE_ID, fileExtension = "jpg")
+    deleteSeedScratchFile(fileId = SEED_IMAGE_2_FILE_ID, fileExtension = "jpg")
+    deleteSeedScratchFile(fileId = SEED_IMAGE_3_FILE_ID, fileExtension = "jpg")
+    deleteSeedScratchFile(fileId = SEED_CONTACT_VCARD_FILE_ID, fileExtension = "vcf")
+    deleteSeedScratchFile(fileId = SEED_LOCATION_VCARD_FILE_ID, fileExtension = "vcf")
+    deleteSeedScratchFile(fileId = SEED_VIDEO_FILE_ID, fileExtension = "mp4")
+    deleteSeedScratchFile(fileId = SEED_ANIMATED_GIF_FILE_ID, fileExtension = "gif")
+    deleteSeedScratchFile(fileId = SEED_IMAGE_1_FILE_ID)
+    deleteSeedScratchFile(fileId = SEED_IMAGE_2_FILE_ID)
+    deleteSeedScratchFile(fileId = SEED_IMAGE_3_FILE_ID)
+    deleteSeedScratchFile(fileId = SEED_CONTACT_VCARD_FILE_ID)
+    deleteSeedScratchFile(fileId = SEED_LOCATION_VCARD_FILE_ID)
+    deleteSeedScratchFile(fileId = SEED_VIDEO_FILE_ID)
+    deleteSeedScratchFile(fileId = SEED_AUDIO_FILE_ID)
+    deleteSeedScratchFile(fileId = SEED_ANIMATED_GIF_FILE_ID)
+    deleteSeededAttachmentScratchFiles(attachmentUris = seededAttachmentUris)
+
+    MessagingContentProvider.notifyConversationListChanged()
+    LogUtil.d(TAG, "Seeded test data cleared")
+}
+
+private fun buildTestImages(context: Context): List<String> {
+    val specs = listOf(
+        SeedImageSpec(
+            fileId = SEED_IMAGE_1_FILE_ID,
+            fileExtension = "jpg",
+            backgroundColor = Color.rgb(100, 149, 237),
+            label = "Photo 1",
+        ),
+        SeedImageSpec(
+            fileId = SEED_IMAGE_2_FILE_ID,
+            fileExtension = "jpg",
+            backgroundColor = Color.rgb(144, 238, 144),
+            label = "Photo 2",
+        ),
+        SeedImageSpec(
+            fileId = SEED_IMAGE_3_FILE_ID,
+            fileExtension = "jpg",
+            backgroundColor = Color.rgb(255, 160, 122),
+            label = "Photo 3",
+        ),
+    )
+
+    return specs.map { spec ->
+        val imageUri = buildSeedScratchUri(
+            fileId = spec.fileId,
+            fileExtension = spec.fileExtension,
+        )
+        val file = MediaScratchFileProvider.getFileFromUri(imageUri)
+        val bmp = createBitmap(400, 300)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(spec.backgroundColor)
+        val paint = Paint().apply {
+            color = Color.WHITE
+            textSize = 48f
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
+        file.parentFile?.mkdirs()
+        canvas.drawText(spec.label, 130f, 165f, paint)
+        FileOutputStream(file).use { outputStream ->
+            bmp.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+        }
+        bmp.recycle()
+        imageUri.toString()
+    }
+}
+
+private fun buildTestAnimatedGif(): String {
+    val animatedGifUri = buildSeedScratchUri(
+        fileId = SEED_ANIMATED_GIF_FILE_ID,
+        fileExtension = "gif",
+    )
+    val file = MediaScratchFileProvider.getFileFromUri(animatedGifUri)
+    file.parentFile?.mkdirs()
+    file.writeBytes(seedAnimatedGifBytes())
+    MediaScratchFileProvider.addUriToDisplayNameEntry(animatedGifUri, "seed_animation.gif")
+    return animatedGifUri.toString()
+}
+
+private fun seedAnimatedGifBytes(): ByteArray {
+    return Base64.getMimeDecoder().decode(
+        """
+        R0lGODlhYABgAPZtAEFp4UJq4UNr4UVs4kVt4khv4kpw4ktx4050409041F141J35FR45Ft+5Vx+
+        5V1/5WCC5mGC5mOE5mSF52aG52eH52iI53CO6HOQ6XSR6XSS6XmV6nqW6n2Y6n6Z64Ca64Kc64Od
+        64Se7Iag7Ieg7Iih7Imh7Iqj7Yyk7Y6m7ZGp7pet75iu752y8J6z8KC08KG18Ka48ae68am78aq8
+        8qu98qy+8rDB87HB87LC87TE87nI9LvJ9L7M9cHO9cLP9cPQ9sXR9sfT9sjT9snV98zW98zX983Y
+        987Y99Da+NHb+NLc+NTd+NXd+Nbf+dff+djg+dnh+dri+dvj+d3k+t3l+t7l+uDm+uLo+uPp++Xq
+        ++br++bs++jt++nt++nu/Orv/O/y/PDz/fL0/fL1/fX3/fb4/vj5/vn6/vr7/vv7/vv8/v7+////
+        /wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH/
+        C05FVFNDQVBFMi4wAwEAAAAh+QQAIwAAACwAAAAAYABgAAAH/4AAgoOEhYaHiImKi4yNjo+QkZKT
+        lJWWl5iZmpucnZ6foKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr/AwcLDxMXGx8jJysvM
+        zc7P0NHS09TV1tfY2drBDjVXZWhWMgyCRG3nTwBR5+znPcYmaG1gRk9mbWOCMlltTysAOcC0OdKj
+        x5A27wYJPIeAV4Y2ZUAMOrCkTQFBPNpgGHSkTQRBDBASerIOTS9+Hgp9gEFAkJI2DgbxOzDIBIVC
+        CNp04UWhjZZFXCwOQpNPUYR+vES0+TEIRrscgogOytmujRJDD4HwStFGSM0eRtqESbmgjZVBPcHw
+        WMtDhaERbYig7rqgsxBcpgB6ehW0oY2ORSzatOBFoIvgqfxsCPIQdxBXGItqtEnRK4O8KDl4jLnH
+        AkCLdVcgz7DSJkoPCYdqRBHjM0oDXhaEjFmjZUZfiaTPMWXN7qahJ1UVbBtOvLjx48iTK1/OvLnz
+        59CjS59Ovbr169iza9/Ovbv37+DDix9Pvrx5ToEAACH5BAAjAAAALAAAAABgAGAAhi59Mi9+MzB+
+        NDB/NDKANjOANzWBODaCOjeDOziDPDmEPD2GQD6HQT6HQkGJREKKRkOKR0SLSEWLSUaMSUuPTkyP
+        T02QUVCSVFKTVVSUV1WVWFaWWVeWWliXW1mYXFuZXl+cYmKdZWWfaGagaWegaWujbWujbm2kcHCm
+        cnGndHOodnWpeHeqenirenmre3utfnytfn2uf36vgYCwgoOyhoe0iY24j465kJG7k5K7lJS8lpS9
+        lpa+mJi/mpnAm5vBnZ3Cn57DoKDEoqLFpKTGpqjJqqnJq6rKq63Mr7HPs7LPs7TRtrjTubvVvLzV
+        vb/XwMDYwcLZw8LZxMTaxcbcyMfcyMjdycndysvezMvfzMzfzc7gz8/h0NPj1NTk1NXl1tbm19jn
+        2Njn2dno2tro29vp3N3q3d/r4ODs4OLt4+Pu5OTu5Obv5ubw5+fw6Ojx6Ozz7e307e/17/D28fH2
+        8fT49fX59ff69/j6+Pj7+fn7+fr8+vv8+/7+/v///wAAAAf/gACCg4SFhoeIiYqLjI2Oj5CRkpOU
+        lZaXmJmam5ydnp+goaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2+v8DBwsPExcbHyMnKy8zN
+        zs/Q0dLT1NXW19jZ2r8VQ2Z3d2VBEIJTfuddAGHn7OdMxjF4fm9VXXd+cwMAQGh+XDYAjrjxY4UJ
+        Eyl+3g2i8CMMHjxdQOga4ecOi0EKtvg5IGiJHxGDrPi5IAhCQkJJ8JWRB4cjrjN+UhRS0aOAIC1+
+        LAzql0DQgBgbCKnhom+CPA+4NvhRs2jNxkF35iQagKOEoAL3JOBq4cfJIB7tjgjCI1XQgnbnsiTK
+        cRLXDD9RuQbJYELFjxwVAEyGGaTUzZK/S2ocKhDETxYFuUL4WaNv0As/TQR1gDuohB8kiy6E4eNj
+        wQWXtgq08bNj0IJ+RASh8CNWEA0/PBIV2MEnik6uEnGNkAfmSJI5924A2AHGj5nYQsj4AcMkw6Eo
+        FcFIf+NHay4PT+bwQSPkhJ+LZdh5ldMuqKEuaP3wabytvfv38OPLn0+/vv37+PPr38+/v///AAYo
+        4IAEFmjggQgmqOCCDDbo4IMQahIIACH5BAAjAAAALAAAAABgAGAAh9gbYNgcYdgeYtkfY9kgZNkh
+        ZNkiZdokZtolZ9omZ9onaNsra9ssbNwwbtwwb9wxcNwycNw1ct02c905dd47dt48d949eN5Bet9E
+        fd9Ffd9Hf+BIf+BJgOFOhOFQheJTh+JVieJXiuJYiuNZi+NajONej+RgkORhkeRjkuVkk+VmlOVp
+        luZrl+ZrmOZvm+dwm+dxnOdzned0nud1n+h4oel8o+mApuqDqOqEqeuKreuLruuNr+yOsO2UtO2V
+        te2Xt+6aue6cuu+gve+hvu+ivvCmwfCnwvCow/GrxPGuxvGvx/GvyPKxyfK1y/K2zPO4zvO5zvS8
+        0PS90fS+0fS/0vTA0/TB1PXC1fXD1fXE1vXF1vXH2PbI2PbJ2vbL2/bM2/fP3ffQ3vfR3/fS4PjU
+        4fjV4vjW4vjX4/jY5PjZ5PnZ5fnc5/nd5/rg6frh6vrj7Prk7Pvl7fvm7vvq8Pzr8fzt8/zv9Pzw
+        9P3x9f3y9v3z9/30+P31+P32+f73+f74+v75+/77/P/9/v/+/v///wAAAAAAAAAAAAAAAAAAAAAA
+        AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+        AAAAAAAAAAAAAAj/AAEIHEiwoMGDCBMqXMiwocOHECNKnEixosWLGDNq3Mixo8ePIEOKHEmypMmT
+        KFOqXMmypcuXMGPKnEmzps2bOHPq3Mmzp8+fQIMKHUq0qNGjSJMqXcq0qdOnUKNKnUq1qtWrWLNq
+        /UkBCBo9fdD4gCCQCqGzYACQOcv2LBOjLwARknMFTB9CdgQA8MGGUJcbAIjIIZSFCROzbwcyuPHF
+        jh4qGnSKIKSHxUAFXQgdEJiEUIiBVwhdEAiBUGKBOwiFvTtnM86+KQqq4EFAYGYLA/u6FgAjMug3
+        tSPc/YBzAyE3C91oHthHj0IdMwYO9m2zBSEnA1OzJQJAACA7Axe01z27JWEIQmT03pxBiMpAGExC
+        01EBoAH6gRrmJtmfpMbBE0kAckUEOX1AyBvqCeQCIU0IxEF7A5VASBEMdUYIFBTkJMBgOijWVxAC
+        nUAIdwLRQMgODAlQQRGEoCGZXGEQgYQdd+EAgA5htIiiD2uNwQR1CRFwFlk5cQCFHoG44YOIlqHB
+        FnZ1tAXke0cMFMFZDVxVBSE2KBCBWS5eRcJ4enSQFQdFbJGFDwRu5eabcMYp55x01mnnnXjmqeee
+        fPbp55+ABirooIQWauihiCaq6KKMNupoogEBADs=
+        """.trimIndent(),
+    )
+}
+
+private fun buildTestVCards(): SeedVCards {
+    val contactVCardUri = buildSeedScratchUri(
+        fileId = SEED_CONTACT_VCARD_FILE_ID,
+        fileExtension = "vcf",
+    )
+    val contactFile = MediaScratchFileProvider.getFileFromUri(contactVCardUri)
+    contactFile.parentFile?.mkdirs()
+    contactFile.writeText(
+        """
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Sam Rivera
+        N:Rivera;Sam;;;
+        TEL;TYPE=CELL:+15550001111
+        EMAIL:sam.rivera@example.com
+        END:VCARD
+        """.trimIndent(),
+    )
+    MediaScratchFileProvider.addUriToDisplayNameEntry(contactVCardUri, "Sam Rivera")
+
+    val locationVCardUri = buildSeedScratchUri(
+        fileId = SEED_LOCATION_VCARD_FILE_ID,
+        fileExtension = "vcf",
+    )
+    val locationFile = MediaScratchFileProvider.getFileFromUri(locationVCardUri)
+    locationFile.parentFile?.mkdirs()
+    locationFile.writeText(
+        """
+        BEGIN:VCARD
+        VERSION:3.0
+        KIND:location
+        FN:Pier 57
+        ADR;TYPE=WORK:;;25 11th Ave;New York;NY;10011;United States
+        NOTE:Meet by the market entrance
+        END:VCARD
+        """.trimIndent(),
+    )
+    MediaScratchFileProvider.addUriToDisplayNameEntry(locationVCardUri, "Pier 57")
+
+    return SeedVCards(
+        contactUri = contactVCardUri.toString(),
+        locationUri = locationVCardUri.toString(),
+    )
+}
+
+private fun buildTestAudio(): String {
+    val audioUri = buildSeedScratchUri(
+        fileId = SEED_AUDIO_FILE_ID,
+        fileExtension = "wav",
+    )
+    val file = MediaScratchFileProvider.getFileFromUri(audioUri)
+    file.parentFile?.mkdirs()
+
+    BufferedOutputStream(FileOutputStream(file)).use { outputStream ->
+        writeSeedWaveFile(outputStream = outputStream)
+    }
+
+    MediaScratchFileProvider.addUriToDisplayNameEntry(audioUri, "seed_audio.wav")
+    return audioUri.toString()
+}
+
+private fun buildTestVideo(context: Context): String {
+    val videoUri = buildSeedScratchUri(
+        fileId = SEED_VIDEO_FILE_ID,
+        fileExtension = "mp4",
+    )
+    val file = MediaScratchFileProvider.getFileFromUri(videoUri)
+    file.parentFile?.mkdirs()
+    context.assets.open("seed_video.mp4").use { inputStream ->
+        FileOutputStream(file).use { outputStream ->
+            inputStream.copyTo(outputStream)
+        }
+    }
+
+    MediaScratchFileProvider.addUriToDisplayNameEntry(videoUri, "seed_video.mp4")
+    return videoUri.toString()
+}
+
+private fun buildSeedScratchUri(
+    fileId: String,
+    fileExtension: String? = null,
+): Uri {
+    val uriBuilder = MediaScratchFileProvider.getUriBuilder()
+        .appendPath(fileId)
+    if (!fileExtension.isNullOrBlank()) {
+        uriBuilder.appendQueryParameter(
+            MEDIA_SCRATCH_FILE_EXTENSION_QUERY_PARAMETER,
+            fileExtension,
+        )
+    }
+    return uriBuilder.build()
+}
+
+private fun deleteSeedScratchFile(
+    fileId: String,
+    fileExtension: String? = null,
+) {
+    val seedScratchUri = buildSeedScratchUri(
+        fileId = fileId,
+        fileExtension = fileExtension,
+    )
+    MediaScratchFileProvider.getFileFromUri(seedScratchUri).delete()
+}
+
+private fun deleteSeededAttachmentScratchFiles(
+    attachmentUris: Set<String>,
+) {
+    attachmentUris.forEach { attachmentUri ->
+        val uri = attachmentUri.toUri()
+        if (!MediaScratchFileProvider.isMediaScratchSpaceUri(uri)) {
+            return@forEach
+        }
+
+        MediaScratchFileProvider.getFileFromUri(uri).delete()
+    }
+}
+
+private fun writeSeedWaveFile(
+    outputStream: BufferedOutputStream,
+) {
+    val pcmBytes = buildSeedAudioPcmData()
+    val channels = 1
+    val bitsPerSample = 16
+    val byteRate = SEED_AUDIO_SAMPLE_RATE_HZ * channels * bitsPerSample / 8
+    val blockAlign = channels * bitsPerSample / 8
+    val dataSize = pcmBytes.size
+    val riffChunkSize = 36 + dataSize
+
+    DataOutputStream(outputStream).use { dataOutputStream ->
+        dataOutputStream.writeBytes("RIFF")
+        dataOutputStream.writeInt(Integer.reverseBytes(riffChunkSize))
+        dataOutputStream.writeBytes("WAVE")
+        dataOutputStream.writeBytes("fmt ")
+        dataOutputStream.writeInt(Integer.reverseBytes(16))
+        dataOutputStream.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt())
+        dataOutputStream.writeShort(java.lang.Short.reverseBytes(channels.toShort()).toInt())
+        dataOutputStream.writeInt(Integer.reverseBytes(SEED_AUDIO_SAMPLE_RATE_HZ))
+        dataOutputStream.writeInt(Integer.reverseBytes(byteRate))
+        dataOutputStream.writeShort(java.lang.Short.reverseBytes(blockAlign.toShort()).toInt())
+        dataOutputStream.writeShort(java.lang.Short.reverseBytes(bitsPerSample.toShort()).toInt())
+        dataOutputStream.writeBytes("data")
+        dataOutputStream.writeInt(Integer.reverseBytes(dataSize))
+        dataOutputStream.write(pcmBytes)
+    }
+}
+
+private fun buildSeedAudioPcmData(): ByteArray {
+    val totalSamples = SEED_AUDIO_SAMPLE_RATE_HZ * SEED_AUDIO_DURATION_SECONDS
+    val byteArrayOutputStream = ByteArrayOutputStream(totalSamples * 2)
+    val sampleAmplitude = Short.MAX_VALUE * 0.35
+
+    DataOutputStream(byteArrayOutputStream).use { dataOutputStream ->
+        repeat(totalSamples) { sampleIndex ->
+            val timeSeconds = sampleIndex.toDouble() / SEED_AUDIO_SAMPLE_RATE_HZ.toDouble()
+            val sampleValue = (
+                sin(2.0 * PI * SEED_AUDIO_FREQUENCY_HZ * timeSeconds) * sampleAmplitude
+                ).toInt()
+                .toShort()
+            dataOutputStream.writeShort(java.lang.Short.reverseBytes(sampleValue).toInt())
+        }
+    }
+
+    return byteArrayOutputStream.toByteArray()
+}
+
+private data class SeedImageSpec(
+    val fileId: String,
+    val fileExtension: String,
+    val backgroundColor: Int,
+    val label: String,
+)
+
+private fun findSelfParticipantId(db: DatabaseWrapper): String? = db.query(
+    DatabaseHelper.PARTICIPANTS_TABLE,
+    arrayOf(ParticipantColumns._ID),
+    "${ParticipantColumns.SUB_ID} != ?",
+    arrayOf(ParticipantData.OTHER_THAN_SELF_SUB_ID.toString()),
+    null,
+    null,
+    "${ParticipantColumns._ID} ASC",
+    "1",
+)?.use { cursor ->
+    if (cursor.moveToFirst()) cursor.getString(0) else null
+}
+
+private fun upsertParticipant(
+    db: DatabaseWrapper,
+    phone: String,
+    fullName: String,
+    firstName: String,
+): String {
+    db.insertWithOnConflict(
+        DatabaseHelper.PARTICIPANTS_TABLE,
+        null,
+        ContentValues().apply {
+            put(ParticipantColumns.SUB_ID, ParticipantData.OTHER_THAN_SELF_SUB_ID)
+            put(ParticipantColumns.NORMALIZED_DESTINATION, phone)
+            put(ParticipantColumns.SEND_DESTINATION, phone)
+            put(ParticipantColumns.DISPLAY_DESTINATION, phone)
+            put(ParticipantColumns.FULL_NAME, fullName)
+            put(ParticipantColumns.FIRST_NAME, firstName)
+        },
+        SQLiteDatabase.CONFLICT_IGNORE,
+    )
+
+    return db
+        .query(
+            DatabaseHelper.PARTICIPANTS_TABLE,
+            arrayOf(ParticipantColumns._ID),
+            "${ParticipantColumns.NORMALIZED_DESTINATION} = ? AND ${ParticipantColumns.SUB_ID} = ?",
+            arrayOf(phone, ParticipantData.OTHER_THAN_SELF_SUB_ID.toString()),
+            null,
+            null,
+            null,
+        )
+        ?.use { cursor ->
+            cursor.moveToFirst()
+            cursor.getString(0)
+        }
+        .let(::requireNotNull)
+}
+
+private fun createConversation(
+    db: DatabaseWrapper,
+    name: String,
+    selfId: String,
+    participantIds: List<String>,
+    sortTimestamp: Long,
+    previewUri: String? = null,
+    previewContentType: String? = null,
+): Long {
+    val conversationId = db.insert(
+        DatabaseHelper.CONVERSATIONS_TABLE,
+        null,
+        ContentValues().apply {
+            put(ConversationColumns.NAME, name)
+            put(ConversationColumns.CURRENT_SELF_ID, selfId)
+            put(ConversationColumns.PARTICIPANT_COUNT, participantIds.size)
+            put(ConversationColumns.SORT_TIMESTAMP, sortTimestamp)
+            put(ConversationColumns.ARCHIVE_STATUS, 0)
+            put(ConversationColumns.NOTIFICATION_ENABLED, 1)
+            put(ConversationColumns.NOTIFICATION_VIBRATION, 1)
+            if (previewUri != null) put(ConversationColumns.PREVIEW_URI, previewUri)
+            if (previewContentType !=
+                null
+            ) {
+                put(ConversationColumns.PREVIEW_CONTENT_TYPE, previewContentType)
+            }
+        },
+    )
+    for (participantId in participantIds) {
+        db.insert(
+            DatabaseHelper.CONVERSATION_PARTICIPANTS_TABLE,
+            null,
+            ContentValues().apply {
+                put(ConversationParticipantsColumns.CONVERSATION_ID, conversationId)
+                put(ConversationParticipantsColumns.PARTICIPANT_ID, participantId)
+            },
+        )
+    }
+    return conversationId
+}
+
+private fun insertTextMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    text: String,
+    status: Int,
+    protocol: Int,
+    timestamp: Long,
+    seen: Boolean = true,
+    read: Boolean = true,
+    mmsSubject: String? = null,
+): Long {
+    val messageId = insertMessageRow(
+        db, conversationId, senderId, selfId,
+        status, protocol, timestamp, seen, read, mmsSubject,
+    )
+    db.insert(
+        DatabaseHelper.PARTS_TABLE,
+        null,
+        ContentValues().apply {
+            put(PartColumns.MESSAGE_ID, messageId)
+            put(PartColumns.CONVERSATION_ID, conversationId)
+            put(PartColumns.TEXT, text)
+            put(PartColumns.CONTENT_TYPE, ContentType.TEXT_PLAIN)
+        },
+    )
+    return messageId
+}
+
+private fun insertImageMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    imageUri: String,
+    status: Int,
+    timestamp: Long,
+    seen: Boolean = true,
+    read: Boolean = true,
+    mmsSubject: String? = null,
+): Long {
+    return insertAttachmentMessage(
+        db = db,
+        conversationId = conversationId,
+        senderId = senderId,
+        selfId = selfId,
+        contentType = ContentType.IMAGE_JPEG,
+        attachmentUri = imageUri,
+        status = status,
+        timestamp = timestamp,
+        width = 400,
+        height = 300,
+        seen = seen,
+        read = read,
+        mmsSubject = mmsSubject,
+    )
+}
+
+private fun insertGifMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    gifUri: String,
+    status: Int,
+    timestamp: Long,
+): Long {
+    return insertAttachmentMessage(
+        db = db,
+        conversationId = conversationId,
+        senderId = senderId,
+        selfId = selfId,
+        contentType = ContentType.IMAGE_GIF,
+        attachmentUri = gifUri,
+        status = status,
+        timestamp = timestamp,
+        width = SEED_ANIMATED_GIF_WIDTH,
+        height = SEED_ANIMATED_GIF_HEIGHT,
+    )
+}
+
+private fun insertMixedMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    text: String,
+    imageUri: String,
+    status: Int,
+    timestamp: Long,
+    seen: Boolean = true,
+    read: Boolean = true,
+    mmsSubject: String? = null,
+): Long {
+    val messageId = insertAttachmentMessage(
+        db = db,
+        conversationId = conversationId,
+        senderId = senderId,
+        selfId = selfId,
+        contentType = ContentType.IMAGE_JPEG,
+        attachmentUri = imageUri,
+        status = status,
+        timestamp = timestamp,
+        width = 400,
+        height = 300,
+        seen = seen,
+        read = read,
+        mmsSubject = mmsSubject,
+    )
+    db.insert(
+        DatabaseHelper.PARTS_TABLE,
+        null,
+        ContentValues().apply {
+            put(PartColumns.MESSAGE_ID, messageId)
+            put(PartColumns.CONVERSATION_ID, conversationId)
+            put(PartColumns.TEXT, text)
+            put(PartColumns.CONTENT_TYPE, ContentType.TEXT_PLAIN)
+        },
+    )
+    return messageId
+}
+
+private fun insertAttachmentMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    contentType: String,
+    attachmentUri: String,
+    status: Int,
+    timestamp: Long,
+    width: Int = 0,
+    height: Int = 0,
+    seen: Boolean = true,
+    read: Boolean = true,
+    mmsSubject: String? = null,
+): Long {
+    val messageId = insertMessageRow(
+        db = db,
+        conversationId = conversationId,
+        senderId = senderId,
+        selfId = selfId,
+        status = status,
+        protocol = MessageData.PROTOCOL_MMS,
+        timestamp = timestamp,
+        seen = seen,
+        read = read,
+        mmsSubject = mmsSubject,
+    )
+    db.insert(
+        DatabaseHelper.PARTS_TABLE,
+        null,
+        ContentValues().apply {
+            put(PartColumns.MESSAGE_ID, messageId)
+            put(PartColumns.CONVERSATION_ID, conversationId)
+            put(PartColumns.CONTENT_TYPE, contentType)
+            put(PartColumns.CONTENT_URI, attachmentUri)
+            put(PartColumns.WIDTH, width)
+            put(PartColumns.HEIGHT, height)
+        },
+    )
+    return messageId
+}
+
+private fun insertVCardMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    vCardUri: String,
+    status: Int,
+    timestamp: Long,
+    seen: Boolean = true,
+    read: Boolean = true,
+): Long {
+    return insertAttachmentMessage(
+        db = db,
+        conversationId = conversationId,
+        senderId = senderId,
+        selfId = selfId,
+        contentType = ContentType.TEXT_VCARD,
+        attachmentUri = vCardUri,
+        status = status,
+        timestamp = timestamp,
+        seen = seen,
+        read = read,
+    )
+}
+
+private fun insertVideoMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    videoUri: String,
+    status: Int,
+    timestamp: Long,
+    seen: Boolean = true,
+    read: Boolean = true,
+): Long {
+    return insertAttachmentMessage(
+        db = db,
+        conversationId = conversationId,
+        senderId = senderId,
+        selfId = selfId,
+        contentType = ContentType.VIDEO_MP4,
+        attachmentUri = videoUri,
+        status = status,
+        timestamp = timestamp,
+        width = 400,
+        height = 300,
+        seen = seen,
+        read = read,
+    )
+}
+
+private fun insertAudioMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    audioUri: String,
+    status: Int,
+    timestamp: Long,
+    seen: Boolean = true,
+    read: Boolean = true,
+): Long {
+    return insertAttachmentMessage(
+        db = db,
+        conversationId = conversationId,
+        senderId = senderId,
+        selfId = selfId,
+        contentType = ContentType.AUDIO_X_WAV,
+        attachmentUri = audioUri,
+        status = status,
+        timestamp = timestamp,
+        seen = seen,
+        read = read,
+    )
+}
+
+private fun insertMessageRow(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    status: Int,
+    protocol: Int,
+    timestamp: Long,
+    seen: Boolean,
+    read: Boolean,
+    mmsSubject: String?,
+): Long = db.insert(
+    DatabaseHelper.MESSAGES_TABLE,
+    null,
+    ContentValues().apply {
+        put(MessageColumns.CONVERSATION_ID, conversationId)
+        put(MessageColumns.SENDER_PARTICIPANT_ID, senderId)
+        put(MessageColumns.SELF_PARTICIPANT_ID, selfId)
+        put(MessageColumns.STATUS, status)
+        put(MessageColumns.PROTOCOL, protocol)
+        put(MessageColumns.SENT_TIMESTAMP, timestamp)
+        put(MessageColumns.RECEIVED_TIMESTAMP, timestamp)
+        put(MessageColumns.SEEN, if (seen) 1 else 0)
+        put(MessageColumns.READ, if (read) 1 else 0)
+        if (mmsSubject != null) put(MessageColumns.MMS_SUBJECT, mmsSubject)
+    },
+)
+
+private fun insertMmsDownloadMessage(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    senderId: String,
+    selfId: String,
+    status: Int,
+    timestamp: Long,
+    messageSizeBytes: Long,
+    expiryTimestamp: Long,
+    seedIndex: Int,
+): Long {
+    val messageId = db.insert(
+        DatabaseHelper.MESSAGES_TABLE,
+        null,
+        ContentValues().apply {
+            put(MessageColumns.CONVERSATION_ID, conversationId)
+            put(MessageColumns.SENDER_PARTICIPANT_ID, senderId)
+            put(MessageColumns.SELF_PARTICIPANT_ID, selfId)
+            put(MessageColumns.STATUS, status)
+            put(MessageColumns.PROTOCOL, MessageData.PROTOCOL_MMS_PUSH_NOTIFICATION)
+            put(MessageColumns.SENT_TIMESTAMP, timestamp)
+            put(MessageColumns.RECEIVED_TIMESTAMP, timestamp)
+            put(MessageColumns.SEEN, 1)
+            put(MessageColumns.READ, 1)
+            put(MessageColumns.SMS_PRIORITY, 0)
+            put(MessageColumns.SMS_MESSAGE_SIZE, messageSizeBytes)
+            put(MessageColumns.MMS_TRANSACTION_ID, "seeded-transaction-$seedIndex")
+            put(MessageColumns.MMS_CONTENT_LOCATION, "https://example.invalid/mms/$seedIndex")
+            put(MessageColumns.MMS_EXPIRY, expiryTimestamp)
+            put(MessageColumns.RAW_TELEPHONY_STATUS, MessageData.RAW_TELEPHONY_STATUS_UNDEFINED)
+            put(MessageColumns.RETRY_START_TIMESTAMP, timestamp)
+        },
+    )
+
+    db.insert(
+        DatabaseHelper.PARTS_TABLE,
+        null,
+        ContentValues().apply {
+            put(PartColumns.MESSAGE_ID, messageId)
+            put(PartColumns.CONVERSATION_ID, conversationId)
+            put(PartColumns.CONTENT_TYPE, ContentType.TEXT_PLAIN)
+            put(PartColumns.TEXT, "")
+        },
+    )
+
+    return messageId
+}
+
+private fun finalizeConversation(
+    db: DatabaseWrapper,
+    conversationId: Long,
+    latestMessageId: Long,
+    latestTimestamp: Long,
+    snippetText: String,
+    previewUri: String? = null,
+    previewContentType: String? = null,
+) {
+    db.update(
+        DatabaseHelper.CONVERSATIONS_TABLE,
+        ContentValues().apply {
+            put(ConversationColumns.LATEST_MESSAGE_ID, latestMessageId)
+            put(ConversationColumns.SORT_TIMESTAMP, latestTimestamp)
+            put(ConversationColumns.SNIPPET_TEXT, snippetText)
+            if (previewUri != null) put(ConversationColumns.PREVIEW_URI, previewUri)
+            if (previewContentType !=
+                null
+            ) {
+                put(ConversationColumns.PREVIEW_CONTENT_TYPE, previewContentType)
+            }
+        },
+        "${ConversationColumns._ID} = ?",
+        arrayOf(conversationId.toString()),
+    )
+}
+
+/**
+ * 1:1 SMS thread with Alice, 40 messages.
+ */
+private fun seedScenarioA(db: DatabaseWrapper, selfId: String, aliceId: String, now: Long) {
+    val baseTime = now - 4 * DAYS
+    val convId = createConversation(db, "Alice Wonderland", selfId, listOf(aliceId), baseTime)
+
+    val texts = listOf(
+        "Hey, are you free this weekend?",
+        "I was thinking we could grab coffee",
+        "There's a new place downtown that opened last week",
+        "Yeah sounds good! What time works for you?",
+        "How about 10am Saturday?",
+        "Perfect, see you then",
+        "Can you also bring the book you mentioned?",
+        "Sure, I'll bring it",
+        "Did you see the game last night?",
+        "No I missed it, who won?",
+        "It went to overtime, crazy finish",
+        "I'll have to watch the highlights",
+        "Just got back from the gym",
+        "Nice, how was it?",
+        "Pretty good, trying the new routine",
+        "Let me know how it goes",
+        "Will do",
+        "See you Saturday!",
+        "Looking forward to it",
+        "Don't forget to bring the book",
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    for (i in 0 until 40) {
+        // 3-message clusters 2 min apart; 38 min gap between clusters
+        val clusterIndex = i / 3
+        val withinCluster = i % 3
+        val msgTime = baseTime + clusterIndex * 38 * MINUTES + withinCluster * 2 * MINUTES
+        val isIncoming = withinCluster != 1 // pattern: in, out, in, in, out, in, ...
+        val senderId = if (isIncoming) aliceId else selfId
+        val status = if (isIncoming) {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        }
+        latestMsgId = insertTextMessage(
+            db,
+            convId,
+            senderId,
+            selfId,
+            texts[i % texts.size],
+            status,
+            MessageData.PROTOCOL_SMS,
+            msgTime,
+        )
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, "Don't forget to bring the book")
+}
+
+/**
+ * 1:1 SMS thread with Bob containing a failed message and one retrying.
+ */
+private fun seedScenarioB(db: DatabaseWrapper, selfId: String, bobId: String, now: Long) {
+    val baseTime = now - 2 * DAYS
+    val convId = createConversation(db, "Bob Baker", selfId, listOf(bobId), baseTime)
+
+    // (text, isIncoming, status)
+    val messages = listOf(
+        Triple("Did you get the report?", false, MessageData.BUGLE_STATUS_OUTGOING_COMPLETE),
+        Triple("Yeah got it, looks good", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple(
+            "Can you send the updated version?",
+            false,
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE,
+        ),
+        Triple("Sure, give me a minute", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple("Here you go", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple("Thanks! One more thing...", false, MessageData.BUGLE_STATUS_OUTGOING_COMPLETE),
+        Triple("What is it?", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple("Can we meet tomorrow at 3pm?", false, MessageData.BUGLE_STATUS_OUTGOING_FAILED),
+        Triple("OK let me check", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple("3pm works for me", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple("Can we meet tomorrow at 3pm?", false, MessageData.BUGLE_STATUS_OUTGOING_COMPLETE),
+        Triple("Great, see you then", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple("Perfect", false, MessageData.BUGLE_STATUS_OUTGOING_COMPLETE),
+        Triple("Don't be late!", true, MessageData.BUGLE_STATUS_INCOMING_COMPLETE),
+        Triple("Never", false, MessageData.BUGLE_STATUS_OUTGOING_AWAITING_RETRY),
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    for ((idx, m) in messages.withIndex()) {
+        val (text, isIncoming, status) = m
+        val msgTime = baseTime + idx * 8 * MINUTES
+        val senderId = if (isIncoming) bobId else selfId
+        latestMsgId = insertTextMessage(
+            db,
+            convId,
+            senderId,
+            selfId,
+            text,
+            status,
+            MessageData.PROTOCOL_SMS,
+            msgTime,
+        )
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, "Never")
+}
+
+/**
+ * Group MMS thread "Team Chat" with Carol, Dave, Eve (30 messages)
+ */
+private fun seedScenarioC(
+    db: DatabaseWrapper,
+    selfId: String,
+    carolId: String,
+    daveId: String,
+    eveId: String,
+    now: Long,
+) {
+    val baseTime = now - 3 * DAYS
+    val convId = createConversation(
+        db,
+        "Team Chat",
+        selfId,
+        listOf(carolId, daveId, eveId),
+        baseTime,
+    )
+
+    val senders = listOf(carolId, daveId, eveId, selfId)
+    val texts = listOf(
+        "Hey everyone!", "Hi there", "Hello!", "What time are we meeting?",
+        "How about 2pm?", "Works for me", "Can't do 2pm, how about 3?", "3pm is fine",
+        "Let's do 3pm then", "Should we bring anything?", "Just yourselves", "I'll bring snacks",
+        "Nice!", "See you all tomorrow", "Can't wait", "It's going to be great",
+        "Agreed", "Anyone need a ride?", "I'm good, thanks", "I could use one actually",
+        "I got you Carol", "Thanks Dave!", "Ok see everyone at 3", "See you there!",
+        "Don't forget it's at the usual place", "Got it", "See you all soon!",
+        "This is going to be fun", "Definitely", "On my way!",
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    for (i in texts.indices) {
+        val sender = senders[i % senders.size]
+        val status = if (sender == selfId) {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        }
+        val msgTime = baseTime + i * 5 * MINUTES
+        latestMsgId = insertTextMessage(
+            db,
+            convId,
+            sender,
+            selfId,
+            texts[i],
+            status,
+            MessageData.PROTOCOL_MMS,
+            msgTime,
+        )
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, "On my way!")
+}
+
+/**
+ * MMS thread with Frank where every message has a subject line
+ */
+private fun seedScenarioD(db: DatabaseWrapper, selfId: String, frankId: String, now: Long) {
+    val baseTime = now - 5 * DAYS
+    val convId = createConversation(db, "Frank Ford", selfId, listOf(frankId), baseTime)
+
+    val messages = listOf(
+        Pair("Are you still up for hiking Saturday?", false),
+        Pair("Yes! Super excited", true),
+        Pair("Great, let's meet at the trailhead at 8am", false),
+        Pair("Works for me. Which trail?", true),
+        Pair("The ridge trail, it has the best views", false),
+        Pair("Oh I love that trail!", true),
+        Pair("Bring sunscreen, it'll be hot", false),
+        Pair("Good call", true),
+        Pair("See you Saturday!", false),
+        Pair("Can't wait!", true),
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    for ((idx, m) in messages.withIndex()) {
+        val (text, isIncoming) = m
+        val msgTime = baseTime + idx * 10 * MINUTES
+        val senderId = if (isIncoming) frankId else selfId
+        val status = if (isIncoming) {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        }
+        latestMsgId = insertTextMessage(
+            db, convId, senderId, selfId,
+            text, status, MessageData.PROTOCOL_MMS, msgTime, mmsSubject = "Weekend plans",
+        )
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, "Can't wait!")
+}
+
+/**
+ * Long thread with Grace, 300 messages, last 5 unread
+ */
+private fun seedScenarioE(db: DatabaseWrapper, selfId: String, graceId: String, now: Long) {
+    val totalMessages = 300
+    val baseTime = now - 10 * HOURS
+    val unreadStartIndex = totalMessages - 5
+    val convId = createConversation(db, "Grace Green", selfId, listOf(graceId), baseTime)
+
+    var latestMsgId = 0L
+    var latestText = ""
+    for (i in 0 until totalMessages) {
+        val msgTime = baseTime + i * 2 * MINUTES
+        val isIncoming = i % 2 == 0
+        val senderId = if (isIncoming) graceId else selfId
+        val status = if (isIncoming) {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        }
+        val isUnread = i >= unreadStartIndex
+        latestText = "Message ${i + 1} — scroll performance test"
+        latestMsgId = insertTextMessage(
+            db, convId, senderId, selfId,
+            latestText, status, MessageData.PROTOCOL_SMS, msgTime,
+            seen = !isUnread, read = !isUnread,
+        )
+    }
+
+    finalizeConversation(
+        db,
+        convId,
+        latestMsgId,
+        baseTime + totalMessages * 2 * MINUTES,
+        latestText,
+    )
+}
+
+/**
+ * All-unread conversation with Henry, 5 incoming messages
+ */
+private fun seedScenarioF(db: DatabaseWrapper, selfId: String, henryId: String, now: Long) {
+    val baseTime = now - 30 * MINUTES
+    val convId = createConversation(db, "Henry Hall", selfId, listOf(henryId), baseTime)
+
+    val texts = listOf(
+        "Hey, are you around?",
+        "I need to show you something",
+        "It's important",
+        "Please reply when you get a chance",
+        "I'll be online for the next hour",
+        TEST_LINK_MESSAGE_URL,
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    for ((idx, text) in texts.withIndex()) {
+        val msgTime = baseTime + idx * 5 * MINUTES
+        latestMsgId = insertTextMessage(
+            db, convId, henryId, selfId, text,
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE, MessageData.PROTOCOL_SMS, msgTime,
+            seen = false, read = false,
+        )
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, texts.last())
+}
+
+/**
+ * 1:1 MMS thread with Iris containing image-only, text+image, and text-only messages
+ */
+private fun seedScenarioG(
+    db: DatabaseWrapper,
+    selfId: String,
+    irisId: String,
+    images: List<String>,
+    now: Long,
+) {
+    val img1 = images[0]
+    val img2 = images[1]
+    val img3 = images[2]
+    val baseTime = now - 1 * DAYS
+
+    val convId = createConversation(
+        db,
+        "Iris Ingram",
+        selfId,
+        listOf(irisId),
+        baseTime,
+        previewUri = img1,
+        previewContentType = ContentType.IMAGE_JPEG,
+    )
+
+    data class Msg(
+        val type: String,
+        val text: String = "",
+        val imageUri: String = "",
+        val isIncoming: Boolean,
+    )
+
+    val messages = listOf(
+        Msg("text", text = "Hey! Check out what I found", isIncoming = true),
+        Msg("image", imageUri = img1, isIncoming = true),
+        Msg("text", text = "Wow that looks amazing!", isIncoming = false),
+        Msg("text", text = "Where was this taken?", isIncoming = false),
+        Msg("text", text = "At the botanical garden last weekend", isIncoming = true),
+        Msg(
+            "mixed",
+            text = "Here's another one from the same day",
+            imageUri = img2,
+            isIncoming = true,
+        ),
+        Msg("text", text = "These are stunning", isIncoming = false),
+        Msg("image", imageUri = img3, isIncoming = false),
+        Msg("text", text = "I took that one on the way home", isIncoming = false),
+        Msg("text", text = "You have such a good eye for photos!", isIncoming = true),
+        Msg("text", text = "Thanks! We should go together sometime", isIncoming = false),
+        Msg("text", text = TEST_LINK_MESSAGE_URL, isIncoming = false),
+        Msg("text", text = "Definitely, let me know when you're free", isIncoming = true),
+        Msg("image", imageUri = img2, isIncoming = true),
+        Msg("text", text = "And one more from yesterday", isIncoming = true),
+        Msg(
+            "mixed",
+            text = "Shot this from my window this morning",
+            imageUri = img1,
+            isIncoming = false,
+        ),
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    for ((idx, m) in messages.withIndex()) {
+        val msgTime = baseTime + idx * 12 * MINUTES
+        val senderId = if (m.isIncoming) irisId else selfId
+        val status = if (m.isIncoming) {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        }
+        latestMsgId = when (m.type) {
+            "image" -> insertImageMessage(
+                db,
+                convId,
+                senderId,
+                selfId,
+                m.imageUri,
+                status,
+                msgTime,
+            )
+
+            "mixed" -> insertMixedMessage(
+                db,
+                convId,
+                senderId,
+                selfId,
+                m.text,
+                m.imageUri,
+                status,
+                msgTime,
+            )
+
+            else -> insertTextMessage(
+                db,
+                convId,
+                senderId,
+                selfId,
+                m.text,
+                status,
+                MessageData.PROTOCOL_MMS,
+                msgTime,
+            )
+        }
+        latestTime = msgTime
+    }
+
+    finalizeConversation(
+        db,
+        convId,
+        latestMsgId,
+        latestTime,
+        "Shot this from my window this morning",
+        previewUri = img1,
+        previewContentType = ContentType.IMAGE_JPEG,
+    )
+}
+
+/**
+ * Group MMS thread "Photo Dump" with Jack and Carol containing image bursts
+ */
+private fun seedScenarioH(
+    db: DatabaseWrapper,
+    selfId: String,
+    jackId: String,
+    carolId: String,
+    images: List<String>,
+    animatedGifUri: String,
+    audioUri: String,
+    videoUri: String,
+    vCards: SeedVCards,
+    now: Long,
+) {
+    val img1 = images[0]
+    val img2 = images[1]
+    val img3 = images[2]
+    val baseTime = now - 6 * HOURS
+
+    val convId = createConversation(
+        db,
+        "Photo Dump",
+        selfId,
+        listOf(jackId, carolId),
+        baseTime,
+        previewUri = img2,
+        previewContentType = ContentType.IMAGE_JPEG,
+    )
+
+    data class Msg(
+        val type: String,
+        val text: String = "",
+        val attachmentUri: String = "",
+        val senderId: String,
+    )
+
+    val messages = listOf(
+        Msg("text", text = "Dropping some pics from last night", senderId = jackId),
+        Msg("image", attachmentUri = img1, senderId = jackId),
+        Msg("image", attachmentUri = img3, senderId = jackId),
+        Msg("text", text = "The lighting was perfect", senderId = jackId),
+        Msg("text", text = "These are great Jack!", senderId = carolId),
+        Msg("image", attachmentUri = img2, senderId = carolId),
+        Msg("text", text = "I got a few too", senderId = carolId),
+        Msg("text", text = "Love that shot Carol", senderId = selfId),
+        Msg(
+            "mixed",
+            text = "Here's mine from the same spot",
+            attachmentUri = img3,
+            senderId = selfId,
+        ),
+        Msg("text", text = "We all had the same idea haha", senderId = jackId),
+        Msg("image", attachmentUri = img1, senderId = carolId),
+        Msg("text", text = TEST_YOUTUBE_VIDEO_URL, senderId = carolId),
+        Msg("text", text = "The clip version is even better", senderId = jackId),
+        Msg("gif", attachmentUri = animatedGifUri, senderId = jackId),
+        Msg("video", attachmentUri = videoUri, senderId = carolId),
+        Msg("text", text = "And here's the ambient audio from the room", senderId = jackId),
+        Msg("audio", attachmentUri = audioUri, senderId = jackId),
+        Msg("text", text = "Send me the photographer contact too", senderId = selfId),
+        Msg("vcard", attachmentUri = vCards.contactUri, senderId = carolId),
+        Msg("text", text = "One more", senderId = carolId),
+        Msg("text", text = "Pin the meetup spot too", senderId = selfId),
+        Msg("vcard", attachmentUri = vCards.locationUri, senderId = jackId),
+        Msg("text", text = "We need to do this again soon", senderId = selfId),
+        Msg("text", text = "+1", senderId = jackId),
+        Msg("text", text = "Same time next week?", senderId = carolId),
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    for ((idx, m) in messages.withIndex()) {
+        val msgTime = baseTime + idx * 7 * MINUTES
+        val status = if (m.senderId == selfId) {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        }
+        latestMsgId = when (m.type) {
+            "image" -> insertImageMessage(
+                db,
+                convId,
+                m.senderId,
+                selfId,
+                m.attachmentUri,
+                status,
+                msgTime,
+            )
+
+            "gif" -> insertGifMessage(
+                db = db,
+                conversationId = convId,
+                senderId = m.senderId,
+                selfId = selfId,
+                gifUri = m.attachmentUri,
+                status = status,
+                timestamp = msgTime,
+            )
+
+            "mixed" -> insertMixedMessage(
+                db,
+                convId,
+                m.senderId,
+                selfId,
+                m.text,
+                m.attachmentUri,
+                status,
+                msgTime,
+            )
+
+            "vcard" -> insertVCardMessage(
+                db = db,
+                conversationId = convId,
+                senderId = m.senderId,
+                selfId = selfId,
+                vCardUri = m.attachmentUri,
+                status = status,
+                timestamp = msgTime,
+            )
+
+            "video" -> insertVideoMessage(
+                db = db,
+                conversationId = convId,
+                senderId = m.senderId,
+                selfId = selfId,
+                videoUri = m.attachmentUri,
+                status = status,
+                timestamp = msgTime,
+            )
+
+            "audio" -> insertAudioMessage(
+                db = db,
+                conversationId = convId,
+                senderId = m.senderId,
+                selfId = selfId,
+                audioUri = m.attachmentUri,
+                status = status,
+                timestamp = msgTime,
+            )
+
+            else -> insertTextMessage(
+                db,
+                convId,
+                m.senderId,
+                selfId,
+                m.text,
+                status,
+                MessageData.PROTOCOL_MMS,
+                msgTime,
+            )
+        }
+        latestTime = msgTime
+    }
+
+    finalizeConversation(
+        db,
+        convId,
+        latestMsgId,
+        latestTime,
+        "Same time next week?",
+        previewUri = img2,
+        previewContentType = ContentType.IMAGE_JPEG,
+    )
+}
+
+/**
+ * Group MMS thread containing explicit clustering and non-clustering cases
+ */
+private fun seedScenarioI(
+    db: DatabaseWrapper,
+    selfId: String,
+    carolId: String,
+    daveId: String,
+    eveId: String,
+    now: Long,
+) {
+    val baseTime = now - 20 * MINUTES
+    val conversationId = createConversation(
+        db = db,
+        name = "Clustering Test Cases",
+        selfId = selfId,
+        participantIds = listOf(carolId, daveId, eveId),
+        sortTimestamp = baseTime,
+    )
+
+    data class ClusterTestMessage(
+        val text: String,
+        val senderId: String,
+        val offsetMillis: Long,
+    )
+
+    val messages = listOf(
+        ClusterTestMessage(
+            text = "Standalone incoming",
+            senderId = carolId,
+            offsetMillis = 0L,
+        ),
+        ClusterTestMessage(
+            text = "Pair top",
+            senderId = carolId,
+            offsetMillis = 2 * MINUTES,
+        ),
+        ClusterTestMessage(
+            text = "Pair bottom",
+            senderId = carolId,
+            offsetMillis = 2 * MINUTES + 30_000L,
+        ),
+        ClusterTestMessage(
+            text = "Triplet top",
+            senderId = daveId,
+            offsetMillis = 5 * MINUTES,
+        ),
+        ClusterTestMessage(
+            text = "Triplet middle",
+            senderId = daveId,
+            offsetMillis = 5 * MINUTES + 20_000L,
+        ),
+        ClusterTestMessage(
+            text = "Triplet bottom",
+            senderId = daveId,
+            offsetMillis = 5 * MINUTES + 40_000L,
+        ),
+        ClusterTestMessage(
+            text = "Quartet top",
+            senderId = eveId,
+            offsetMillis = 8 * MINUTES,
+        ),
+        ClusterTestMessage(
+            text = "Quartet middle 1",
+            senderId = eveId,
+            offsetMillis = 8 * MINUTES + 20_000L,
+        ),
+        ClusterTestMessage(
+            text = "Quartet middle 2",
+            senderId = eveId,
+            offsetMillis = 8 * MINUTES + 40_000L,
+        ),
+        ClusterTestMessage(
+            text = "Quartet bottom",
+            senderId = eveId,
+            offsetMillis = 9 * MINUTES,
+        ),
+        ClusterTestMessage(
+            text = "Same sender after gap",
+            senderId = daveId,
+            offsetMillis = 12 * MINUTES,
+        ),
+        ClusterTestMessage(
+            text = "Gap break still standalone",
+            senderId = daveId,
+            offsetMillis = 13 * MINUTES + 40_000L,
+        ),
+        ClusterTestMessage(
+            text = "Different sender break",
+            senderId = carolId,
+            offsetMillis = 16 * MINUTES,
+        ),
+        ClusterTestMessage(
+            text = "Outgoing standalone",
+            senderId = selfId,
+            offsetMillis = 16 * MINUTES + 20_000L,
+        ),
+        ClusterTestMessage(
+            text = "Outgoing pair top",
+            senderId = selfId,
+            offsetMillis = 19 * MINUTES,
+        ),
+        ClusterTestMessage(
+            text = "Outgoing pair bottom",
+            senderId = selfId,
+            offsetMillis = 19 * MINUTES + 20_000L,
+        ),
+    )
+
+    var latestMessageId = 0L
+    var latestTimestamp = baseTime
+    var latestText = ""
+    for (message in messages) {
+        val timestamp = baseTime + message.offsetMillis
+        val isIncoming = message.senderId != selfId
+        val status = if (isIncoming) {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        }
+
+        latestText = message.text
+        latestMessageId = insertTextMessage(
+            db = db,
+            conversationId = conversationId,
+            senderId = message.senderId,
+            selfId = selfId,
+            text = message.text,
+            status = status,
+            protocol = MessageData.PROTOCOL_MMS,
+            timestamp = timestamp,
+        )
+        latestTimestamp = timestamp
+    }
+
+    finalizeConversation(
+        db = db,
+        conversationId = conversationId,
+        latestMessageId = latestMessageId,
+        latestTimestamp = latestTimestamp,
+        snippetText = latestText,
+    )
+}
+
+/**
+ * 1:1 MMS thread with Kim covering subject across direction and attachment variants.
+ *
+ * Sender row never shows in 1:1 chats, so this scenario isolates direction × content type:
+ * outgoing text, incoming text, incoming image-only, outgoing image+body — each with subject.
+ */
+private fun seedScenarioJ(
+    db: DatabaseWrapper,
+    selfId: String,
+    kimId: String,
+    images: List<String>,
+    now: Long,
+) {
+    val baseTime = now - 4 * HOURS
+    val convId = createConversation(db, "Kim Kelly", selfId, listOf(kimId), baseTime)
+    val img = images[0]
+
+    data class SubjectMsg(
+        val type: String,
+        val text: String = "",
+        val imageUri: String = "",
+        val isIncoming: Boolean,
+        val subject: String,
+    )
+
+    val messages = listOf(
+        SubjectMsg(
+            type = "text",
+            text = "Did you check the report?",
+            isIncoming = false,
+            subject = "Q1 review",
+        ),
+        SubjectMsg(
+            type = "text",
+            text = "Yes, looks great. A couple of comments on slide 4.",
+            isIncoming = true,
+            subject = "Q1 review",
+        ),
+        SubjectMsg(
+            type = "image",
+            imageUri = img,
+            isIncoming = true,
+            subject = "Updated chart",
+        ),
+        SubjectMsg(
+            type = "mixed",
+            text = "Much clearer now, thanks!",
+            imageUri = img,
+            isIncoming = false,
+            subject = "Updated chart",
+        ),
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    var latestText = ""
+    for ((idx, m) in messages.withIndex()) {
+        val msgTime = baseTime + idx * 6 * MINUTES
+        val senderId = if (m.isIncoming) kimId else selfId
+        val status = if (m.isIncoming) {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        }
+        latestText = m.text.ifBlank { m.subject }
+        latestMsgId = when (m.type) {
+            "image" -> insertImageMessage(
+                db = db,
+                conversationId = convId,
+                senderId = senderId,
+                selfId = selfId,
+                imageUri = m.imageUri,
+                status = status,
+                timestamp = msgTime,
+                mmsSubject = m.subject,
+            )
+
+            "mixed" -> insertMixedMessage(
+                db = db,
+                conversationId = convId,
+                senderId = senderId,
+                selfId = selfId,
+                text = m.text,
+                imageUri = m.imageUri,
+                status = status,
+                timestamp = msgTime,
+                mmsSubject = m.subject,
+            )
+
+            else -> insertTextMessage(
+                db = db,
+                conversationId = convId,
+                senderId = senderId,
+                selfId = selfId,
+                text = m.text,
+                status = status,
+                protocol = MessageData.PROTOCOL_MMS,
+                timestamp = msgTime,
+                mmsSubject = m.subject,
+            )
+        }
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, latestText)
+}
+
+/**
+ * 1:1 SMS thread with Olivia exercising every branch of the SIM annotation rule.
+ *
+ * The annotation appears on the LAST message of each contiguous SIM run. The sequence below
+ * walks: a 3-message SIM-A burst (annotation only on the 3rd), a single SIM-B run, a 2-message
+ * SIM-A burst, a 2-message incoming SIM-B burst (direction change ends the run), and a final
+ * outgoing SIM-A message (last in conversation).
+ *
+ * Outgoing rows keep [realSelfId] as their sender so the participants table FK remains valid;
+ * only [MessageColumns.SELF_PARTICIPANT_ID] varies between [simAId] and [simBId].
+ */
+private fun seedScenarioL(
+    db: DatabaseWrapper,
+    realSelfId: String,
+    simAId: String,
+    simBId: String,
+    oliviaId: String,
+    now: Long,
+) {
+    val baseTime = now - 90 * MINUTES
+    val convId = createConversation(
+        db = db,
+        name = "Olivia Ortega",
+        selfId = simAId,
+        participantIds = listOf(oliviaId),
+        sortTimestamp = baseTime,
+    )
+
+    data class SimMixMessage(
+        val text: String,
+        val isIncoming: Boolean,
+        val simSelfId: String,
+        val offsetMillis: Long,
+    )
+
+    val messages = listOf(
+        SimMixMessage("Heads up — switching SIMs today", false, simAId, 0L),
+        SimMixMessage("Two more on this number", false, simAId, 30_000L),
+        SimMixMessage("Third one wraps the SIM 1 burst", false, simAId, 60_000L),
+        SimMixMessage("Now sending from SIM 2 just once", false, simBId, 6 * MINUTES),
+        SimMixMessage("Back to SIM 1", false, simAId, 12 * MINUTES),
+        SimMixMessage("Still on SIM 1", false, simAId, 12 * MINUTES + 30_000L),
+        SimMixMessage("Got it — replying on SIM 2", true, simBId, 18 * MINUTES),
+        SimMixMessage("And one more reply", true, simBId, 18 * MINUTES + 30_000L),
+        SimMixMessage("Last message — back on SIM 1", false, simAId, 24 * MINUTES),
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    var latestText = ""
+    for (message in messages) {
+        val msgTime = baseTime + message.offsetMillis
+        val senderId = if (message.isIncoming) oliviaId else realSelfId
+        val status = if (message.isIncoming) {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        }
+        latestText = message.text
+        latestMsgId = insertTextMessage(
+            db = db,
+            conversationId = convId,
+            senderId = senderId,
+            selfId = message.simSelfId,
+            text = message.text,
+            status = status,
+            protocol = MessageData.PROTOCOL_SMS,
+            timestamp = msgTime,
+        )
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, latestText)
+}
+
+/**
+ * 1:1 MMS notification thread covering manual download rendering states.
+ *
+ * The last two rows intentionally mirror the regression case: the upper placeholder remains
+ * actionable while only the lower placeholder is in a downloading state.
+ */
+private fun seedScenarioM(
+    db: DatabaseWrapper,
+    realSelfId: String,
+    secondarySelfId: String,
+    noraId: String,
+    now: Long,
+) {
+    val baseTime = now - 40 * MINUTES
+    val conversationId = createConversation(
+        db = db,
+        name = "MMS Download States",
+        selfId = realSelfId,
+        participantIds = listOf(noraId),
+        sortTimestamp = baseTime,
+    )
+
+    data class MmsDownloadSeedMessage(
+        val status: Int,
+        val selfId: String,
+        val offsetMillis: Long,
+        val sizeBytes: Long,
+        val expiryTimestamp: Long,
+        val snippet: String,
+    )
+
+    val messages = listOf(
+        MmsDownloadSeedMessage(
+            status = MessageData.BUGLE_STATUS_INCOMING_DOWNLOAD_FAILED,
+            selfId = realSelfId,
+            offsetMillis = 0L,
+            sizeBytes = 4_096L,
+            expiryTimestamp = now + 2 * DAYS,
+            snippet = "Couldn't download MMS",
+        ),
+        MmsDownloadSeedMessage(
+            status = MessageData.BUGLE_STATUS_INCOMING_EXPIRED_OR_NOT_AVAILABLE,
+            selfId = realSelfId,
+            offsetMillis = 8 * MINUTES,
+            sizeBytes = 9_216L,
+            expiryTimestamp = now - 1 * DAYS,
+            snippet = "MMS expired",
+        ),
+        MmsDownloadSeedMessage(
+            status = MessageData.BUGLE_STATUS_INCOMING_YET_TO_MANUAL_DOWNLOAD,
+            selfId = realSelfId,
+            offsetMillis = 16 * MINUTES,
+            sizeBytes = 1_548L,
+            expiryTimestamp = now + 3 * DAYS,
+            snippet = "Tap to download MMS",
+        ),
+        MmsDownloadSeedMessage(
+            status = MessageData.BUGLE_STATUS_INCOMING_MANUAL_DOWNLOADING,
+            selfId = secondarySelfId,
+            offsetMillis = 17 * MINUTES,
+            sizeBytes = 1_548L,
+            expiryTimestamp = now + 3 * DAYS,
+            snippet = "Downloading MMS",
+        ),
+    )
+
+    var latestMessageId = 0L
+    var latestTime = baseTime
+    var latestSnippet = ""
+    for ((index, message) in messages.withIndex()) {
+        val messageTime = baseTime + message.offsetMillis
+        latestMessageId = insertMmsDownloadMessage(
+            db = db,
+            conversationId = conversationId,
+            senderId = noraId,
+            selfId = message.selfId,
+            status = message.status,
+            timestamp = messageTime,
+            messageSizeBytes = message.sizeBytes,
+            expiryTimestamp = message.expiryTimestamp,
+            seedIndex = index + 1,
+        )
+        latestTime = messageTime
+        latestSnippet = message.snippet
+    }
+
+    finalizeConversation(
+        db = db,
+        conversationId = conversationId,
+        latestMessageId = latestMessageId,
+        latestTimestamp = latestTime,
+        snippetText = latestSnippet,
+    )
+}
+
+/**
+ * Group MMS thread covering subject combined with sender-display variations.
+ *
+ * Sender label is shown only on the first message of an incoming cluster, so this scenario
+ * mixes a same-sender cluster (label shown then hidden), a sender change (label shown again),
+ * an outgoing message (no label), and an attachment-with-subject from a fresh sender.
+ */
+private fun seedScenarioK(
+    db: DatabaseWrapper,
+    selfId: String,
+    liamId: String,
+    miaId: String,
+    noahId: String,
+    images: List<String>,
+    now: Long,
+) {
+    val baseTime = now - 2 * HOURS
+    val convId = createConversation(
+        db,
+        "Subject Group",
+        selfId,
+        listOf(liamId, miaId, noahId),
+        baseTime,
+    )
+    val img = images[1]
+
+    data class GroupSubjectMsg(
+        val type: String,
+        val text: String = "",
+        val imageUri: String = "",
+        val senderId: String,
+        val subject: String,
+    )
+
+    val messages = listOf(
+        GroupSubjectMsg(
+            type = "text",
+            text = "Anyone free to review?",
+            senderId = liamId,
+            subject = "Design review",
+        ),
+        GroupSubjectMsg(
+            type = "text",
+            text = "I just added the new mock to the doc",
+            senderId = liamId,
+            subject = "Design review",
+        ),
+        GroupSubjectMsg(
+            type = "text",
+            text = "Looks good — what about the dark mode?",
+            senderId = miaId,
+            subject = "Design review",
+        ),
+        GroupSubjectMsg(
+            type = "text",
+            text = "I'll send screenshots in a minute",
+            senderId = selfId,
+            subject = "Design review",
+        ),
+        GroupSubjectMsg(
+            type = "mixed",
+            text = "Here's the dark version",
+            imageUri = img,
+            senderId = noahId,
+            subject = "Design review",
+        ),
+    )
+
+    var latestMsgId = 0L
+    var latestTime = baseTime
+    var latestText = ""
+    for ((idx, m) in messages.withIndex()) {
+        val msgTime = baseTime + idx * 6 * MINUTES
+        val status = if (m.senderId == selfId) {
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE
+        } else {
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE
+        }
+        latestText = m.text
+        latestMsgId = when (m.type) {
+            "mixed" -> insertMixedMessage(
+                db = db,
+                conversationId = convId,
+                senderId = m.senderId,
+                selfId = selfId,
+                text = m.text,
+                imageUri = m.imageUri,
+                status = status,
+                timestamp = msgTime,
+                mmsSubject = m.subject,
+            )
+
+            else -> insertTextMessage(
+                db = db,
+                conversationId = convId,
+                senderId = m.senderId,
+                selfId = selfId,
+                text = m.text,
+                status = status,
+                protocol = MessageData.PROTOCOL_MMS,
+                timestamp = msgTime,
+                mmsSubject = m.subject,
+            )
+        }
+        latestTime = msgTime
+    }
+
+    finalizeConversation(db, convId, latestMsgId, latestTime, latestText)
+}

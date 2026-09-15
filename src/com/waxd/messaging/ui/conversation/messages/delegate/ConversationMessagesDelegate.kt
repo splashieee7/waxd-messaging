@@ -1,0 +1,366 @@
+package com.waxd.messaging.ui.conversation.messages.delegate
+
+import androidx.core.net.toUri
+import com.waxd.messaging.data.appsettings.repository.AppSettingsRepository
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.attachment.ConversationVCardAttachmentMetadata
+import com.waxd.messaging.data.conversation.repository.ConversationVCardMetadataRepository
+import com.waxd.messaging.data.conversation.repository.ConversationsRepository
+import com.waxd.messaging.datamodel.data.ConversationMessageData
+import com.waxd.messaging.datamodel.data.MessagePartData
+import com.waxd.messaging.di.core.DefaultDispatcher
+import com.waxd.messaging.domain.media.usecase.ResolveAudioDurationMillis
+import com.waxd.messaging.domain.photoviewer.model.ConversationPhotoViewerAttachment
+import com.waxd.messaging.domain.photoviewer.usecase.ResolveConversationPhotoViewerInitialOccurrenceIndex
+import com.waxd.messaging.ui.conversation.attachment.mapper.ConversationVCardAttachmentUiModelMapper
+import com.waxd.messaging.ui.conversation.common.ConversationScreenDelegate
+import com.waxd.messaging.ui.conversation.messages.mapper.ConversationMessageUiModelMapper
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessagePartUiModel
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessageUiModel
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessagesUiState
+import com.waxd.messaging.util.ContentType
+import javax.inject.Inject
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.launch
+
+internal interface ConversationMessagesDelegate :
+    ConversationScreenDelegate<ConversationMessagesUiState> {
+    fun refresh()
+
+    fun resolvePhotoViewerInitialOccurrenceIndex(
+        contentType: String,
+        partId: String,
+        contentUri: String,
+    ): Int
+}
+
+internal class ConversationMessagesDelegateImpl @Inject constructor(
+    private val conversationsRepository: ConversationsRepository,
+    private val appSettingsRepository: AppSettingsRepository,
+    private val resolveAudioDurationMillis: ResolveAudioDurationMillis,
+    private val resolveInitialPhotoOccurrenceIndex:
+    ResolveConversationPhotoViewerInitialOccurrenceIndex,
+    private val conversationMessageUiModelMapper: ConversationMessageUiModelMapper,
+    private val conversationVCardAttachmentUiModelMapper: ConversationVCardAttachmentUiModelMapper,
+    private val conversationVCardMetadataRepository: ConversationVCardMetadataRepository,
+    @param:DefaultDispatcher
+    private val defaultDispatcher: CoroutineDispatcher,
+) : ConversationMessagesDelegate {
+
+    private val _state = MutableStateFlow<ConversationMessagesUiState>(
+        value = ConversationMessagesUiState.Loading,
+    )
+    private val currentMessages = MutableStateFlow<List<ConversationMessageData>>(
+        value = emptyList(),
+    )
+
+    override val state = _state.asStateFlow()
+
+    private val refreshTriggers = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    private var isBound = false
+
+    override fun bind(
+        scope: CoroutineScope,
+        conversationIdFlow: StateFlow<ConversationId?>,
+    ) {
+        if (isBound) {
+            return
+        }
+
+        isBound = true
+
+        scope.launch(defaultDispatcher) {
+            conversationIdFlow.collectLatest { conversationId ->
+                currentMessages.value = emptyList()
+                _state.value = ConversationMessagesUiState.Loading
+
+                if (conversationId == null) {
+                    return@collectLatest
+                }
+
+                observeConversationMessagesUiState(
+                    conversationId = conversationId,
+                ).collect { currentMessagesUiState ->
+                    _state.value = currentMessagesUiState
+                }
+            }
+        }
+    }
+
+    override fun refresh() {
+        refreshTriggers.tryEmit(Unit)
+    }
+
+    override fun resolvePhotoViewerInitialOccurrenceIndex(
+        contentType: String,
+        partId: String,
+        contentUri: String,
+    ): Int {
+        return when {
+            ContentType.isImageType(contentType) -> {
+                resolveInitialPhotoOccurrenceIndex(
+                    partId = partId,
+                    contentUri = contentUri.toUri(),
+                    attachments = buildConversationPhotoViewerAttachments(
+                        messages = currentMessages.value,
+                    ),
+                )
+            }
+
+            else -> 0
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun observeConversationMessagesUiState(
+        conversationId: ConversationId,
+    ): Flow<ConversationMessagesUiState> {
+        return combine(
+            conversationsRepository
+                .getConversationMessages(conversationId = conversationId)
+                .onEach { messages ->
+                    currentMessages.value = messages
+                }
+                .map { messages ->
+                    messages
+                        .asSequence()
+                        .mapNotNull(conversationMessageUiModelMapper::map)
+                        .toImmutableList()
+                }
+                .map(::withAudioDurations)
+                .flatMapLatest { messages ->
+                    observeMessagesWithVCardMetadata(
+                        messages = messages,
+                    )
+                },
+            observeYouTubeLinkPreviewsEnabled(),
+        ) { messages, youTubeLinkPreviewsEnabled ->
+            ConversationMessagesUiState.Present(
+                messages = messages,
+                youTubeLinkPreviewsEnabled = youTubeLinkPreviewsEnabled,
+            )
+        }
+            .flowOn(defaultDispatcher)
+    }
+
+    private fun observeYouTubeLinkPreviewsEnabled(): Flow<Boolean> {
+        return refreshTriggers
+            .onStart { emit(Unit) }
+            .map { appSettingsRepository.isYouTubeLinkPreviewsEnabled() }
+            .distinctUntilChanged()
+    }
+
+    private suspend fun withAudioDurations(
+        messages: ImmutableList<ConversationMessageUiModel>,
+    ): ImmutableList<ConversationMessageUiModel> {
+        val audioContentUris = messages
+            .asSequence()
+            .flatMap(ConversationMessageUiModel::parts)
+            .filterIsInstance<ConversationMessagePartUiModel.Attachment.Audio>()
+            .mapNotNullTo(mutableSetOf()) { audioPart -> audioPart.contentUri?.toString() }
+
+        if (audioContentUris.isEmpty()) {
+            return messages
+        }
+
+        val durationsByContentUri = coroutineScope {
+            audioContentUris
+                .map { contentUri ->
+                    async { contentUri to resolveAudioDurationMillis(contentUri) }
+                }
+                .awaitAll()
+                .toMap()
+        }
+
+        return messages
+            .map { message ->
+                val parts = message.parts.map { part ->
+                    when (part) {
+                        is ConversationMessagePartUiModel.Attachment.Audio -> {
+                            part.copy(
+                                durationMillis = part
+                                    .contentUri
+                                    ?.toString()
+                                    ?.let(durationsByContentUri::get)
+                                    ?: part.durationMillis,
+                            )
+                        }
+
+                        else -> part
+                    }
+                }
+
+                when (parts) {
+                    message.parts -> message
+                    else -> message.copy(parts = parts.toImmutableList())
+                }
+            }
+            .toImmutableList()
+    }
+
+    private fun observeMessagesWithVCardMetadata(
+        messages: List<ConversationMessageUiModel>,
+    ): Flow<ImmutableList<ConversationMessageUiModel>> {
+        val vCardContentUris = messages
+            .asSequence()
+            .flatMap { message -> message.parts.asSequence() }
+            .mapNotNull { part ->
+                (part as? ConversationMessagePartUiModel.Attachment.VCard)
+                    ?.contentUri
+                    ?.toString()
+            }
+            .distinct()
+            .toList()
+
+        if (vCardContentUris.isEmpty()) {
+            return flowOf(messages.toImmutableList())
+        }
+
+        val vCardMetadataFlows = vCardContentUris.map { contentUri ->
+            conversationVCardMetadataRepository
+                .observeAttachmentMetadata(
+                    contentUri = contentUri,
+                    refreshes = refreshTriggers,
+                )
+                .map { metadata ->
+                    contentUri to metadata
+                }
+        }
+
+        return combine(flows = vCardMetadataFlows) { contentUriAndMetadata ->
+            val vCardAttachmentMetadata = contentUriAndMetadata.associate { pair ->
+                pair.first to pair.second
+            }
+
+            updateMessagesWithVCardUiModel(
+                messages = messages,
+                vCardAttachmentMetadata = vCardAttachmentMetadata,
+            )
+        }
+    }
+
+    private fun updateMessagesWithVCardUiModel(
+        messages: List<ConversationMessageUiModel>,
+        vCardAttachmentMetadata: Map<String, ConversationVCardAttachmentMetadata>,
+    ): ImmutableList<ConversationMessageUiModel> {
+        return messages
+            .map { message ->
+                updateMessageUiModelWithVCardUiModel(
+                    message = message,
+                    vCardAttachmentMetadata = vCardAttachmentMetadata,
+                )
+            }
+            .toImmutableList()
+    }
+
+    private fun updateMessageUiModelWithVCardUiModel(
+        message: ConversationMessageUiModel,
+        vCardAttachmentMetadata: Map<String, ConversationVCardAttachmentMetadata>,
+    ): ConversationMessageUiModel {
+        return message.copy(
+            parts = message
+                .parts
+                .asSequence()
+                .map { part ->
+                    updateMessagePartUiModelWithVCardUiModel(
+                        part = part,
+                        vCardAttachmentMetadata = vCardAttachmentMetadata,
+                    )
+                }
+                .toImmutableList(),
+        )
+    }
+
+    private fun updateMessagePartUiModelWithVCardUiModel(
+        part: ConversationMessagePartUiModel,
+        vCardAttachmentMetadata: Map<String, ConversationVCardAttachmentMetadata>,
+    ): ConversationMessagePartUiModel {
+        return when (part) {
+            is ConversationMessagePartUiModel.Attachment.VCard -> {
+                val contentUri = part.contentUri?.toString()
+                val metadata = contentUri?.let(vCardAttachmentMetadata::get)
+
+                part.copy(
+                    vCardUiModel = conversationVCardAttachmentUiModelMapper.map(
+                        metadata = metadata,
+                    ),
+                )
+            }
+
+            is ConversationMessagePartUiModel.Attachment.Audio,
+            is ConversationMessagePartUiModel.Attachment.File,
+            is ConversationMessagePartUiModel.Attachment.Image,
+            is ConversationMessagePartUiModel.Attachment.Video,
+            is ConversationMessagePartUiModel.Text,
+            -> {
+                part
+            }
+        }
+    }
+
+    private fun buildConversationPhotoViewerAttachments(
+        messages: List<ConversationMessageData>,
+    ): Sequence<ConversationPhotoViewerAttachment> {
+        return messages.asSequence().flatMap { message ->
+            buildConversationPhotoViewerAttachments(message = message)
+        }
+    }
+
+    private fun buildConversationPhotoViewerAttachments(
+        message: ConversationMessageData,
+    ): Sequence<ConversationPhotoViewerAttachment> {
+        val parts = message.parts ?: return emptySequence()
+
+        return parts
+            .asSequence()
+            .withIndex()
+            .filter { indexedPart ->
+                indexedPart.value.isImage
+            }
+            .sortedWith(comparator = photoViewerAttachmentPartComparator)
+            .mapNotNull { indexedPart ->
+                val part = indexedPart.value
+                val contentUri = part.contentUri ?: return@mapNotNull null
+
+                ConversationPhotoViewerAttachment(
+                    partId = part.partId.orEmpty(),
+                    contentUri = contentUri,
+                )
+            }
+    }
+
+    private companion object {
+        private val photoViewerAttachmentPartComparator =
+            compareBy<IndexedValue<MessagePartData>> { indexedPart ->
+                indexedPart.value.partId?.toLongOrNull() == null
+            }.thenBy { indexedPart ->
+                indexedPart.value.partId?.toLongOrNull() ?: Long.MAX_VALUE
+            }.thenBy { indexedPart ->
+                indexedPart.value.partId.orEmpty()
+            }.thenBy { indexedPart ->
+                indexedPart.index
+            }
+    }
+}

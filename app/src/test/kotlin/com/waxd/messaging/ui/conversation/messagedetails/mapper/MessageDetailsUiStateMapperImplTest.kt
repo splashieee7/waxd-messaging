@@ -1,0 +1,96 @@
+package com.waxd.messaging.ui.conversation.messagedetails.mapper
+
+import com.waxd.messaging.data.conversation.model.message.ConversationMessageDetails
+import com.waxd.messaging.datamodel.data.ConversationMessageData
+import com.waxd.messaging.ui.conversation.messagedetails.model.MessageDetailsUiState
+import com.waxd.messaging.ui.conversation.messages.mapper.ConversationMessageUiModelMapper
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessageUiModel
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.collections.immutable.persistentListOf
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
+import org.junit.Test
+
+internal class MessageDetailsUiStateMapperImplTest {
+
+    private val conversationMessageUiModelMapper = mockk<ConversationMessageUiModelMapper>()
+
+    private val mapper = MessageDetailsUiStateMapperImpl(
+        conversationMessageUiModelMapper = conversationMessageUiModelMapper,
+    )
+
+    @Test
+    fun map_withMessageAndDetails_buildsContentWithPreview() {
+        val message = mockk<ConversationMessageData>()
+        val preview = mockk<ConversationMessageUiModel>()
+
+        every { conversationMessageUiModelMapper.map(data = message) } returns preview
+
+        val result = mapper.map(
+            message = message,
+            details = details(),
+            youTubeLinkPreviewsEnabled = true,
+        )
+
+        val content = result as MessageDetailsUiState.Content
+        assertSame(preview, content.preview)
+        assertEquals(true, content.youTubeLinkPreviewsEnabled)
+    }
+
+    @Test
+    fun map_withNullMessage_returnsUnavailable() {
+        val result = mapper.map(
+            message = null,
+            details = details(),
+            youTubeLinkPreviewsEnabled = false,
+        )
+
+        assertEquals(MessageDetailsUiState.Unavailable, result)
+    }
+
+    @Test
+    fun map_whenPreviewMapsToNull_returnsUnavailable() {
+        val message = mockk<ConversationMessageData>()
+
+        every { conversationMessageUiModelMapper.map(data = message) } returns null
+
+        val result = mapper.map(
+            message = message,
+            details = details(),
+            youTubeLinkPreviewsEnabled = false,
+        )
+
+        assertEquals(MessageDetailsUiState.Unavailable, result)
+    }
+
+    @Test
+    fun map_withNullDetails_returnsUnavailable() {
+        val message = mockk<ConversationMessageData>()
+
+        every { conversationMessageUiModelMapper.map(data = message) } returns
+            mockk<ConversationMessageUiModel>()
+
+        val result = mapper.map(
+            message = message,
+            details = null,
+            youTubeLinkPreviewsEnabled = false,
+        )
+
+        assertEquals(MessageDetailsUiState.Unavailable, result)
+    }
+
+    private fun details(): ConversationMessageDetails {
+        return ConversationMessageDetails(
+            type = ConversationMessageDetails.Type.SMS,
+            sender = null,
+            recipients = persistentListOf(),
+            sentTimestamp = null,
+            receivedTimestamp = null,
+            priority = null,
+            sizeBytes = null,
+            subscriptionLabel = null,
+            debug = null,
+        )
+    }
+}

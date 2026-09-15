@@ -1,0 +1,348 @@
+/*
+ * Copyright (C) 2015 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.waxd.messaging.util;
+
+import android.Manifest;
+import android.content.Context;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.ContactsContract;
+import android.provider.ContactsContract.CommonDataKinds.Email;
+import android.provider.ContactsContract.CommonDataKinds.Phone;
+import android.provider.ContactsContract.CommonDataKinds.StructuredName;
+import android.provider.ContactsContract.Contacts;
+import android.provider.ContactsContract.Directory;
+import android.provider.ContactsContract.PhoneLookup;
+import android.provider.ContactsContract.Profile;
+
+import com.waxd.messaging.datamodel.CursorQueryData;
+import com.waxd.messaging.sms.MmsSmsUtils;
+import com.google.common.annotations.VisibleForTesting;
+
+/**
+ * Utility class including logic to list, filter, and lookup phone and emails in CP2.
+ */
+@VisibleForTesting
+public class ContactUtil {
+
+    /**
+     * Index of different columns in phone or email queries. All queries below should confirm to
+     * this column content and ordering so that caller can use the uniformed way to process
+     * returned cursors.
+     */
+    public static final int INDEX_CONTACT_ID              = 0;
+    public static final int INDEX_DISPLAY_NAME            = 1;
+    public static final int INDEX_PHOTO_URI               = 2;
+    public static final int INDEX_PHONE_EMAIL             = 3;
+    public static final int INDEX_PHONE_EMAIL_TYPE        = 4;
+    public static final int INDEX_PHONE_EMAIL_LABEL       = 5;
+
+    // An optional lookup_id column used by PhoneLookupQuery that is needed when querying for
+    // contact information.
+    public static final int INDEX_LOOKUP_KEY              = 6;
+
+    // An optional _id column to query results that need to be displayed in a list view.
+    public static final int INDEX_DATA_ID                 = 7;
+
+    /**
+     * Constants for listing and filtering phones.
+     */
+    public static class PhoneQuery {
+        public static final String SORT_KEY = Phone.SORT_KEY_PRIMARY;
+
+        public static final String[] PROJECTION = new String[] {
+            Phone.CONTACT_ID,                   // 0
+            Phone.DISPLAY_NAME_PRIMARY,         // 1
+            Phone.PHOTO_THUMBNAIL_URI,          // 2
+            Phone.NUMBER,                       // 3
+            Phone.TYPE,                         // 4
+            Phone.LABEL,                        // 5
+            Phone.LOOKUP_KEY,                   // 6
+            Phone._ID,                          // 7
+            PhoneQuery.SORT_KEY,                // 8
+        };
+    }
+
+    /**
+     * Constants for looking up phone numbers.
+     */
+    public static class PhoneLookupQuery {
+        public static final String[] PROJECTION = new String[] {
+            // The _ID field points to the contact id of the content
+            PhoneLookup._ID,                          // 0
+            PhoneLookup.DISPLAY_NAME,                 // 1
+            PhoneLookup.PHOTO_THUMBNAIL_URI,          // 2
+            PhoneLookup.NUMBER,                       // 3
+            PhoneLookup.TYPE,                         // 4
+            PhoneLookup.LABEL,                        // 5
+            PhoneLookup.LOOKUP_KEY,                   // 6
+            // The data id is not included as part of the projection since it's not part of
+            // PhoneLookup. This is okay because the _id field serves as both the data id and
+            // contact id. Also we never show the results directly in a list view so we are not
+            // concerned about duplicated _id's (namely, the same contact has two same phone
+            // numbers)
+        };
+    }
+
+    /**
+     * Constants for listing and filtering emails.
+     */
+    public static class EmailQuery {
+        public static final String SORT_KEY = Email.SORT_KEY_PRIMARY;
+
+        public static final String[] PROJECTION = new String[] {
+            Email.CONTACT_ID,                   // 0
+            Email.DISPLAY_NAME_PRIMARY,         // 1
+            Email.PHOTO_THUMBNAIL_URI,          // 2
+            Email.ADDRESS,                      // 3
+            Email.TYPE,                         // 4
+            Email.LABEL,                        // 5
+            Email.LOOKUP_KEY,                   // 6
+            Email._ID,                          // 7
+            EmailQuery.SORT_KEY,                // 8
+        };
+    }
+
+    public static final int INDEX_SELF_QUERY_LOOKUP_KEY = 3;
+
+    /**
+     * Constants for querying self from CP2.
+     */
+    public static class SelfQuery {
+        public static final String[] PROJECTION = new String[] {
+            Profile._ID,                        // 0
+            Profile.DISPLAY_NAME_PRIMARY,       // 1
+            Profile.PHOTO_THUMBNAIL_URI,        // 2
+            Profile.LOOKUP_KEY                  // 3
+            // Phone number, type, label and data_id is not provided in this projection since
+            // Profile CONTENT_URI doesn't include this information. Also, we don't need it
+            // we just need the name and avatar url.
+        };
+    }
+
+    public static class StructuredNameQuery {
+        public static final String[] PROJECTION = new String[] {
+            StructuredName.DISPLAY_NAME,
+            StructuredName.GIVEN_NAME,
+            StructuredName.FAMILY_NAME,
+            StructuredName.PREFIX,
+            StructuredName.MIDDLE_NAME,
+            StructuredName.SUFFIX
+        };
+    }
+
+    public static final int INDEX_STRUCTURED_NAME_DISPLAY_NAME = 0;
+    public static final int INDEX_STRUCTURED_NAME_GIVEN_NAME = 1;
+    public static final int INDEX_STRUCTURED_NAME_FAMILY_NAME = 2;
+    public static final int INDEX_STRUCTURED_NAME_PREFIX = 3;
+    public static final int INDEX_STRUCTURED_NAME_MIDDLE_NAME = 4;
+    public static final int INDEX_STRUCTURED_NAME_SUFFIX = 5;
+
+    /**
+     * This class is static. No need to create an instance.
+     */
+    private ContactUtil() {
+    }
+
+    @VisibleForTesting
+    public static CursorQueryData getSelf(final Context context) {
+        if (!ContactUtil.hasReadContactsPermission()) {
+            return CursorQueryData.getEmptyQueryData();
+        }
+        return new CursorQueryData(context, Profile.CONTENT_URI, SelfQuery.PROJECTION, null, null,
+                null);
+    }
+
+    /**
+     * Lookup a destination (phone, email). Supplied destination should be a relatively complete
+     * one for this to succeed. PhoneLookup / EmailLookup URI will apply some smartness to do a
+     * loose match to see whether there is a contact that matches this destination.
+     */
+    public static CursorQueryData lookupDestination(final Context context,
+            final String destination) {
+        if (MmsSmsUtils.isEmailAddress(destination)) {
+            return ContactUtil.lookupEmail(context, destination);
+        } else {
+            return ContactUtil.lookupPhone(context, destination);
+        }
+    }
+
+    private static CursorQueryData filterPhonesInternal(final Context context,
+            final Uri phoneFilterBaseUri, final String query, final long directoryId) {
+        if (!ContactUtil.hasReadContactsPermission()) {
+            return CursorQueryData.getEmptyQueryData();
+        }
+        Uri phoneFilterUri = buildDirectorySearchUri(phoneFilterBaseUri, query, directoryId);
+        return new CursorQueryData(context,
+                phoneFilterUri,
+                PhoneQuery.PROJECTION, null, null,
+                PhoneQuery.SORT_KEY);
+    }
+    /**
+     * Lookup a phone based on a phone number. Supplied phone should be a relatively complete
+     * phone number for this to succeed. PhoneLookup URI will apply some smartness to do a
+     * loose match to see whether there is a contact that matches this phone.
+     * NOTE: This is visible for testing only, clients should only call lookupDestination() since
+     * we support email addresses as well.
+     */
+    @VisibleForTesting
+    public static CursorQueryData lookupPhone(final Context context, final String phone) {
+        if (!ContactUtil.hasReadContactsPermission()) {
+            return CursorQueryData.getEmptyQueryData();
+        }
+
+        final Uri uri = getPhoneLookupUri().buildUpon()
+                .appendPath(phone).build();
+
+        return new CursorQueryData(context, uri, PhoneLookupQuery.PROJECTION, null, null, null);
+    }
+
+    /**
+     * Get a list of emails matching a search criteria. In Bugle, since email is not a common
+     * usage scenario, we should only do email search after user typed in a query indicating
+     * an intention to search by email (for example, "joe@").
+     * NOTE: This is visible for testing only, clients should only call filterDestination() since
+     * we support email addresses as well.
+     */
+    @VisibleForTesting
+    public static CursorQueryData filterEmails(final Context context, final String query) {
+        return filterEmailsInternal(context, Email.CONTENT_FILTER_URI, query, Directory.DEFAULT);
+    }
+
+    private static CursorQueryData filterEmailsInternal(final Context context,
+            final Uri filterEmailsBaseUri, final String query, final long directoryId) {
+        if (!ContactUtil.hasReadContactsPermission()) {
+            return CursorQueryData.getEmptyQueryData();
+        }
+        final Uri filterEmailsUri = buildDirectorySearchUri(filterEmailsBaseUri, query,
+                directoryId);
+        return new CursorQueryData(context,
+                filterEmailsUri,
+                PhoneQuery.PROJECTION, null, null,
+                PhoneQuery.SORT_KEY);
+    }
+
+    /**
+     * Lookup emails based a complete email address. Since there is no special logic needed for
+     * email lookup, this simply calls filterEmails.
+     * NOTE: This is visible for testing only, clients should only call lookupDestination() since
+     * we support email addresses as well.
+     */
+    @VisibleForTesting
+    public static CursorQueryData lookupEmail(final Context context, final String email) {
+        if (!ContactUtil.hasReadContactsPermission()) {
+            return CursorQueryData.getEmptyQueryData();
+        }
+
+        final Uri uri = getEmailContentLookupUri().buildUpon()
+                .appendPath(email).appendQueryParameter(
+                        ContactsContract.DIRECTORY_PARAM_KEY, String.valueOf(Directory.DEFAULT))
+                        .build();
+
+        return new CursorQueryData(context, uri, EmailQuery.PROJECTION, null, null,
+                EmailQuery.SORT_KEY);
+    }
+
+    /**
+     * Looks up the structured name for a contact.
+     *
+     * @param primaryOnly If there are multiple raw contacts, set this flag to return only the
+     * name used as the primary display name. Otherwise, this method returns all names.
+     */
+    private static CursorQueryData lookupStructuredName(final Context context, final long contactId,
+            final boolean primaryOnly) {
+        if (!ContactUtil.hasReadContactsPermission()) {
+            return CursorQueryData.getEmptyQueryData();
+        }
+
+        // TODO: Handle enterprise contacts
+        final Uri uri = ContactsContract.Contacts.CONTENT_URI.buildUpon()
+                .appendPath(String.valueOf(contactId))
+                .appendPath(ContactsContract.Contacts.Data.CONTENT_DIRECTORY).build();
+
+        String selection = ContactsContract.Data.MIMETYPE + "=?";
+        final String[] selectionArgs = {
+                StructuredName.CONTENT_ITEM_TYPE
+        };
+        if (primaryOnly) {
+            selection += " AND " + Contacts.DISPLAY_NAME_PRIMARY + "="
+                    + StructuredName.DISPLAY_NAME;
+        }
+
+        return new CursorQueryData(context, uri,
+                StructuredNameQuery.PROJECTION, selection, selectionArgs, null);
+    }
+
+    /**
+     * Looks up the first name for a contact. If there are multiple raw
+     * contacts, this returns the name that is associated with the contact's
+     * primary display name. The name is null when contact id does not exist
+     * (possibly because it is a corp contact) or it does not have a first name.
+     */
+    public static String lookupFirstName(final Context context, final long contactId) {
+        if (isEnterpriseContactId(contactId)) {
+            return null;
+        }
+        String firstName = null;
+        Cursor nameCursor = null;
+        try {
+            nameCursor = ContactUtil.lookupStructuredName(context, contactId, true)
+                    .performSynchronousQuery();
+            if (nameCursor != null && nameCursor.moveToFirst()) {
+                firstName = nameCursor.getString(ContactUtil.INDEX_STRUCTURED_NAME_GIVEN_NAME);
+            }
+        } finally {
+            if (nameCursor != null) {
+                nameCursor.close();
+            }
+        }
+        return firstName;
+    }
+
+    /**
+     * Returns if a given contact id belongs to managed profile.
+     */
+    public static boolean isEnterpriseContactId(final long contactId) {
+        return ContactsContract.Contacts.isEnterpriseContactId(contactId);
+    }
+
+    /**
+     * Returns Email lookup uri that will query both primary and corp profile
+     */
+    private static Uri getEmailContentLookupUri() {
+        return Email.ENTERPRISE_CONTENT_LOOKUP_URI;
+    }
+
+    /**
+     * Returns PhoneLookup URI.
+     */
+    private static Uri getPhoneLookupUri() {
+        return PhoneLookup.ENTERPRISE_CONTENT_FILTER_URI;
+    }
+
+    public static boolean hasReadContactsPermission() {
+        return OsUtil.hasPermission(Manifest.permission.READ_CONTACTS);
+    }
+
+    private static Uri buildDirectorySearchUri(final Uri uri, final String query,
+            final long directoryId) {
+        return uri.buildUpon()
+                .appendPath(query).appendQueryParameter(
+                        ContactsContract.DIRECTORY_PARAM_KEY, String.valueOf(directoryId))
+                .build();
+    }
+}

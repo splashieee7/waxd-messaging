@@ -1,0 +1,73 @@
+package com.waxd.messaging.ui.blockedparticipants.screen.mapper
+
+import com.waxd.messaging.data.blockedparticipants.model.BlockedDirectChat
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.domain.conversation.usecase.participant.CanShowOrAddContact
+import com.waxd.messaging.domain.conversation.usecase.participant.IsContactSaved
+import com.waxd.messaging.domain.conversation.usecase.telephony.CanPlacePhoneCall
+import com.waxd.messaging.ui.blockedparticipants.screen.model.BlockedParticipantUiState
+import javax.inject.Inject
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.toImmutableList
+
+internal interface BlockedParticipantsUiStateMapper {
+    fun map(
+        chats: ImmutableList<BlockedDirectChat>,
+    ): ImmutableList<BlockedParticipantUiState>
+}
+
+internal class BlockedParticipantsUiStateMapperImpl @Inject constructor(
+    private val canPlacePhoneCall: CanPlacePhoneCall,
+    private val canShowOrAddContact: CanShowOrAddContact,
+    private val isContactSavedUseCase: IsContactSaved,
+) : BlockedParticipantsUiStateMapper {
+
+    override fun map(
+        chats: ImmutableList<BlockedDirectChat>,
+    ): ImmutableList<BlockedParticipantUiState> {
+        return chats
+            .map(::toBlockedParticipantUiState)
+            .toImmutableList()
+    }
+
+    private fun toBlockedParticipantUiState(
+        chat: BlockedDirectChat,
+    ): BlockedParticipantUiState {
+        val participant = chat.participant
+        val contactName = participant.fullName?.takeIf(String::isNotEmpty)
+        val displayDestination = participant.displayDestination.orEmpty()
+
+        val displayName = contactName ?: displayDestination
+        val details = when {
+            contactName != null && !participant.isUnknownSender -> displayDestination
+            else -> null
+        }
+
+        val normalizedDestination = participant.normalizedDestination
+        val canCall = canPlacePhoneCall(normalizedDestination)
+        val canShowContact = canShowOrAddContact(
+            isGroup = false,
+            contactId = participant.contactId,
+            lookupKey = participant.lookupKey,
+            destination = normalizedDestination,
+        )
+        val isContactSaved = isContactSavedUseCase(
+            contactId = participant.contactId,
+            lookupKey = participant.lookupKey,
+        )
+
+        return BlockedParticipantUiState(
+            participantId = ParticipantId(participant.id),
+            conversationId = chat.conversationId,
+            avatarUri = participant.profilePhotoUri?.takeIf(String::isNotBlank),
+            displayName = displayName,
+            details = details,
+            contactId = participant.contactId,
+            lookupKey = participant.lookupKey,
+            normalizedDestination = normalizedDestination,
+            canCall = canCall,
+            canShowContact = canShowContact,
+            isContactSaved = isContactSaved,
+        )
+    }
+}

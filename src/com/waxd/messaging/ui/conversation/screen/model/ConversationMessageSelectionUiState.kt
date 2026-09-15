@@ -1,0 +1,38 @@
+package com.waxd.messaging.ui.conversation.screen.model
+
+import androidx.compose.runtime.Immutable
+import com.waxd.messaging.data.conversation.model.MessageId
+import kotlinx.collections.immutable.ImmutableSet
+import kotlinx.collections.immutable.persistentSetOf
+
+@Immutable
+internal data class ConversationMessageSelectionUiState(
+    val selectedMessageIds: ImmutableSet<MessageId> = persistentSetOf(),
+    val availableActions: ImmutableSet<ConversationMessageSelectionAction> = persistentSetOf(),
+    val deleteConfirmation: ConversationMessageDeleteConfirmationUiState? = null,
+) {
+    val isSelectionMode: Boolean
+        get() = selectedMessageIds.isNotEmpty()
+
+    val isMultiSelect: Boolean
+        get() = selectedMessageIds.size > 1
+
+    val selectedMessageCount: Int
+        get() = selectedMessageIds.size
+}
+
+@Immutable
+internal data class ConversationMessageDeleteConfirmationUiState(
+    val messageIds: ImmutableSet<MessageId> = persistentSetOf(),
+)
+
+internal enum class ConversationMessageSelectionAction {
+    Copy,
+    Delete,
+    Details,
+    Download,
+    Forward,
+    Resend,
+    SaveAttachment,
+    Share,
+}

@@ -1,0 +1,864 @@
+package com.waxd.messaging.ui.conversation.screen
+
+import android.app.Activity
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.waxd.messaging.R
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.MessageId
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.data.conversation.model.draft.ConversationDraft
+import com.waxd.messaging.data.media.model.ConversationCapturedMedia
+import com.waxd.messaging.data.subscription.repository.ConversationSimSelectionRepository
+import com.waxd.messaging.datamodel.MessagingContentProvider
+import com.waxd.messaging.di.core.DefaultDispatcher
+import com.waxd.messaging.domain.conversation.usecase.action.CreateDefaultSmsRoleRequest
+import com.waxd.messaging.domain.conversation.usecase.participant.CanAddContact
+import com.waxd.messaging.domain.conversation.usecase.participant.CanAddMoreConversationParticipants
+import com.waxd.messaging.domain.conversation.usecase.participant.ResolveContactAction
+import com.waxd.messaging.domain.conversation.usecase.participant.model.ResolveContactActionResult
+import com.waxd.messaging.domain.conversation.usecase.telephony.CanPlacePhoneCall
+import com.waxd.messaging.ui.contact.model.AddContactRequest
+import com.waxd.messaging.ui.conversation.audio.delegate.ConversationAudioRecordingDelegate
+import com.waxd.messaging.ui.conversation.composer.delegate.ConversationComposerAttachmentsDelegate
+import com.waxd.messaging.ui.conversation.composer.delegate.ConversationDraftDelegate
+import com.waxd.messaging.ui.conversation.composer.delegate.ConversationSubscriptionSelectionDelegate
+import com.waxd.messaging.ui.conversation.composer.mapper.ConversationComposerUiStateMapper
+import com.waxd.messaging.ui.conversation.composer.model.ComposerAttachmentUiModel
+import com.waxd.messaging.ui.conversation.composer.model.ConversationComposerUiState
+import com.waxd.messaging.ui.conversation.entry.model.ConversationEntryStartupAttachment
+import com.waxd.messaging.ui.conversation.focus.delegate.ConversationFocusDelegate
+import com.waxd.messaging.ui.conversation.mediapicker.delegate.ConversationMediaPickerDelegate
+import com.waxd.messaging.ui.conversation.messages.delegate.ConversationMessageSelectionDelegate
+import com.waxd.messaging.ui.conversation.messages.delegate.ConversationMessagesDelegate
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessagesUiState
+import com.waxd.messaging.ui.conversation.metadata.delegate.ConversationMetadataDelegate
+import com.waxd.messaging.ui.conversation.metadata.model.ConversationMetadataUiState
+import com.waxd.messaging.ui.conversation.screen.model.ConversationAttachmentLimitWarning
+import com.waxd.messaging.ui.conversation.screen.model.ConversationMediaPickerOverlayUiState
+import com.waxd.messaging.ui.conversation.screen.model.ConversationMessageSelectionAction
+import com.waxd.messaging.ui.conversation.screen.model.ConversationMessageSelectionUiState
+import com.waxd.messaging.ui.conversation.screen.model.ConversationScreenEffect
+import com.waxd.messaging.ui.conversation.screen.model.ConversationScreenNavEvent as NavEvent
+import com.waxd.messaging.ui.conversation.screen.model.ConversationScreenScaffoldUiState
+import com.waxd.messaging.util.ContentType
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+internal interface ConversationScreenModel {
+    val effects: Flow<ConversationScreenEffect>
+    val navigationEvents: Flow<NavEvent>
+    val mediaPickerOverlayUiState: StateFlow<ConversationMediaPickerOverlayUiState>
+    val scaffoldUiState: StateFlow<ConversationScreenScaffoldUiState>
+
+    fun onConversationIdChanged(conversationId: ConversationId?)
+    fun onOpenStartupAttachment(
+        conversationId: ConversationId,
+        startupAttachment: ConversationEntryStartupAttachment,
+    )
+
+    fun onSeedDraft(
+        conversationId: ConversationId,
+        draft: ConversationDraft,
+    )
+
+    fun onAttachmentClicked(
+        attachment: ComposerAttachmentUiModel.Resolved,
+    )
+
+    fun onMessageAttachmentClicked(
+        contentType: String,
+        contentUri: String,
+        partId: String,
+    )
+
+    fun onMessageClick(messageId: MessageId)
+    fun onMessageAvatarClick(messageId: MessageId)
+    fun onMessageDownloadClick(messageId: MessageId)
+    fun onMessageLongClick(messageId: MessageId)
+    fun onMessageResendClick(messageId: MessageId)
+    fun onMessageSelectionActionClick(action: ConversationMessageSelectionAction)
+
+    fun onCallClick()
+
+    fun onSimSelected(selfParticipantId: ParticipantId)
+
+    fun onExternalUriClicked(uri: String)
+
+    fun onPhotoPickerMediaSelected(contentUris: List<String>)
+    fun onPhotoPickerMediaDeselected(contentUris: List<String>)
+    fun onContactCardPicked(contactUri: String?)
+    fun onMessageTextChanged(text: String)
+    fun tryStartAddingAttachment(): Boolean
+    fun onAudioRecordingStart(isLocked: Boolean)
+    fun onAudioRecordingLock(): Boolean
+    fun onAudioRecordingFinish()
+    fun onAudioRecordingCancel()
+    fun onCapturedMediaReady(capturedMedia: ConversationCapturedMedia)
+    fun onRemovePendingAttachment(pendingAttachmentId: String)
+    fun onRemoveResolvedAttachment(contentUri: String)
+    fun onUpdateAttachmentCaption(
+        contentUri: String,
+        captionText: String,
+    )
+
+    fun dismissDeleteMessageConfirmation()
+    fun dismissMessageSelection()
+    fun confirmDeleteSelectedMessages()
+    fun onSendClick()
+    fun dismissAttachmentLimitWarning()
+    fun sendAnywayAfterAttachmentLimitWarning()
+    fun onDefaultSmsRolePromptActionClick()
+    fun onDefaultSmsRoleRequestResult(resultCode: Int)
+    fun onDefaultSmsRoleRequestLaunchFailed()
+    fun persistDraft()
+
+    fun onArchiveConversationClick()
+    fun onUnarchiveConversationClick()
+    fun onUnblockClick()
+    fun onAddContactClick()
+    fun onDeleteConversationClick()
+    fun confirmDeleteConversation()
+    fun dismissDeleteConversationConfirmation()
+
+    fun onShowSubjectFieldClick()
+    fun onSubjectChipClear()
+    fun onSubjectDialogConfirm(subjectText: String)
+    fun onSubjectDialogDismiss()
+
+    fun onScreenForegrounded(cancelNotification: Boolean)
+    fun onScreenBackgrounded()
+}
+
+@HiltViewModel
+internal class ConversationViewModel @Inject constructor(
+    private val conversationAudioRecordingDelegate: ConversationAudioRecordingDelegate,
+    private val conversationComposerAttachmentsDelegate: ConversationComposerAttachmentsDelegate,
+    private val conversationDraftDelegate: ConversationDraftDelegate,
+    private val conversationMessagesDelegate: ConversationMessagesDelegate,
+    private val conversationMessageSelectionDelegate: ConversationMessageSelectionDelegate,
+    private val conversationMediaPickerDelegate: ConversationMediaPickerDelegate,
+    private val conversationMetadataDelegate: ConversationMetadataDelegate,
+    private val conversationFocusDelegate: ConversationFocusDelegate,
+    private val conversationSubscriptionSelectionDelegate:
+    ConversationSubscriptionSelectionDelegate,
+    conversationComposerUiStateMapper: ConversationComposerUiStateMapper,
+    private val simSelectionRepository: ConversationSimSelectionRepository,
+    private val canAddMoreConversationParticipants: CanAddMoreConversationParticipants,
+    private val canAddContact: CanAddContact,
+    private val canPlacePhoneCall: CanPlacePhoneCall,
+    private val createDefaultSmsRoleRequest: CreateDefaultSmsRoleRequest,
+    @param:DefaultDispatcher
+    private val defaultDispatcher: CoroutineDispatcher,
+    private val savedStateHandle: SavedStateHandle,
+    private val resolveContactAction: ResolveContactAction,
+) : ViewModel(),
+    ConversationScreenModel {
+
+    private val conversationIdFlow: MutableStateFlow<ConversationId?> = MutableStateFlow(
+        ConversationId.fromOrNull(savedStateHandle[CONVERSATION_ID_KEY]),
+    )
+    private val _effects = MutableSharedFlow<ConversationScreenEffect>(
+        extraBufferCapacity = 1,
+    )
+    private val _navigationEvents = MutableSharedFlow<NavEvent>(extraBufferCapacity = 1)
+
+    override val effects = _effects.asSharedFlow()
+    override val navigationEvents = _navigationEvents.asSharedFlow()
+
+    init {
+        initializeDelegates()
+    }
+
+    private val composerUiState = combine(
+        conversationAudioRecordingDelegate.state,
+        conversationMetadataDelegate.state,
+        conversationDraftDelegate.state,
+        conversationComposerAttachmentsDelegate.state,
+        conversationSubscriptionSelectionDelegate.state,
+    ) { audioRecordingState, metadataState, draftState, attachments, subscriptionSelectionState ->
+        conversationComposerUiStateMapper.map(
+            audioRecording = audioRecordingState,
+            draftState = draftState,
+            attachments = attachments,
+            composerAvailability = metadataState.composerAvailability,
+            subscriptions = subscriptionSelectionState.subscriptions,
+            areSubscriptionsLoaded = subscriptionSelectionState.areSubscriptionsLoaded,
+            defaultSmsSubscriptionId = subscriptionSelectionState.defaultSmsSubscriptionId,
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(
+            stopTimeoutMillis = STATEFLOW_STOP_TIMEOUT_MILLIS,
+        ),
+        initialValue = run {
+            val subscriptionSelectionState = conversationSubscriptionSelectionDelegate.state.value
+
+            conversationComposerUiStateMapper.map(
+                audioRecording = conversationAudioRecordingDelegate.state.value,
+                draftState = conversationDraftDelegate.state.value,
+                attachments = conversationComposerAttachmentsDelegate.state.value,
+                composerAvailability = conversationMetadataDelegate
+                    .state.value.composerAvailability,
+                subscriptions = subscriptionSelectionState.subscriptions,
+                areSubscriptionsLoaded = subscriptionSelectionState.areSubscriptionsLoaded,
+                defaultSmsSubscriptionId = subscriptionSelectionState.defaultSmsSubscriptionId,
+            )
+        },
+    )
+
+    private val dialogUiState = combine(
+        conversationDraftDelegate.attachmentLimitWarning,
+        conversationMetadataDelegate.isDeleteConversationConfirmationVisible,
+        conversationDraftDelegate.isSubjectDialogVisible,
+    ) { attachmentLimitWarning, isDeleteConversationConfirmationVisible, isSubjectDialogVisible ->
+        ConversationScreenDialogUiState(
+            attachmentLimitWarning = attachmentLimitWarning,
+            isDeleteConversationConfirmationVisible = isDeleteConversationConfirmationVisible,
+            isSubjectDialogVisible = isSubjectDialogVisible,
+        )
+    }
+
+    override val scaffoldUiState: StateFlow<ConversationScreenScaffoldUiState> = combine(
+        conversationMetadataDelegate.state,
+        conversationMessagesDelegate.state,
+        composerUiState,
+        conversationMessageSelectionDelegate.state,
+        dialogUiState,
+    ) { metadataState, messagesUiState, composerUiState, selectionUiState, dialogUiState ->
+        buildScaffoldUiState(
+            metadataState = metadataState,
+            messagesUiState = messagesUiState,
+            composerUiState = composerUiState,
+            selectionUiState = selectionUiState,
+            attachmentLimitWarning = dialogUiState.attachmentLimitWarning,
+            isDeleteConversationConfirmationVisible = dialogUiState
+                .isDeleteConversationConfirmationVisible,
+            isSubjectDialogVisible = dialogUiState.isSubjectDialogVisible,
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(
+            stopTimeoutMillis = STATEFLOW_STOP_TIMEOUT_MILLIS,
+        ),
+        initialValue = buildScaffoldUiState(
+            metadataState = conversationMetadataDelegate.state.value,
+            messagesUiState = conversationMessagesDelegate.state.value,
+            composerUiState = composerUiState.value,
+            selectionUiState = conversationMessageSelectionDelegate.state.value,
+            attachmentLimitWarning = conversationDraftDelegate.attachmentLimitWarning.value,
+            isDeleteConversationConfirmationVisible =
+                conversationMetadataDelegate.isDeleteConversationConfirmationVisible.value,
+            isSubjectDialogVisible = conversationDraftDelegate.isSubjectDialogVisible.value,
+        ),
+    )
+
+    private fun buildScaffoldUiState(
+        metadataState: ConversationMetadataUiState,
+        messagesUiState: ConversationMessagesUiState,
+        composerUiState: ConversationComposerUiState,
+        selectionUiState: ConversationMessageSelectionUiState,
+        attachmentLimitWarning: ConversationAttachmentLimitWarning?,
+        isDeleteConversationConfirmationVisible: Boolean,
+        isSubjectDialogVisible: Boolean,
+    ): ConversationScreenScaffoldUiState {
+        val isPresent = metadataState is ConversationMetadataUiState.Present
+        val presentMetadata = metadataState as? ConversationMetadataUiState.Present
+
+        return ConversationScreenScaffoldUiState(
+            canAddPeople = canAddPeople(metadataState = metadataState),
+            canCall = canCall(metadataState = metadataState),
+            canArchive = isPresent && presentMetadata?.isArchived == false,
+            canUnarchive = isPresent && presentMetadata?.isArchived == true,
+            canAddContact = isAddContactAvailable(metadataState = metadataState),
+            canDeleteConversation = isPresent,
+            canEditSubject = isPresent,
+            isBlocked = presentMetadata?.isBlocked == true,
+            attachmentLimitWarning = attachmentLimitWarning,
+            isDeleteConversationConfirmationVisible = isDeleteConversationConfirmationVisible,
+            isSubjectDialogVisible = isSubjectDialogVisible,
+            metadata = metadataState,
+            messages = messagesUiState,
+            composer = composerUiState,
+            selection = selectionUiState,
+        )
+    }
+
+    override val mediaPickerOverlayUiState = combine(
+        conversationMetadataDelegate.state,
+        composerUiState,
+        conversationMediaPickerDelegate.photoPickerSourceContentUriByAttachmentContentUri,
+    ) { metadataState, composerUiState, photoPickerSourceContentUriByAttachmentContentUri ->
+        val conversationTitle = when (metadataState) {
+            is ConversationMetadataUiState.Present -> metadataState.title
+            else -> null
+        }
+
+        ConversationMediaPickerOverlayUiState(
+            attachments = composerUiState.attachments,
+            conversationTitle = conversationTitle,
+            isSendActionEnabled = composerUiState.isSendEnabled,
+            photoPickerSourceContentUriByAttachmentContentUri =
+            photoPickerSourceContentUriByAttachmentContentUri,
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(
+            stopTimeoutMillis = STATEFLOW_STOP_TIMEOUT_MILLIS,
+        ),
+        initialValue = ConversationMediaPickerOverlayUiState(
+            attachments = composerUiState.value.attachments,
+            conversationTitle = null,
+            isSendActionEnabled = composerUiState.value.isSendEnabled,
+            photoPickerSourceContentUriByAttachmentContentUri = conversationMediaPickerDelegate
+                .photoPickerSourceContentUriByAttachmentContentUri.value,
+        ),
+    )
+
+    private fun initializeDelegates() {
+        conversationAudioRecordingDelegate.bind(
+            scope = viewModelScope,
+            conversationIdFlow = conversationIdFlow,
+        )
+        conversationDraftDelegate.bind(
+            scope = viewModelScope,
+            conversationIdFlow = conversationIdFlow,
+        )
+        conversationComposerAttachmentsDelegate.bind(
+            scope = viewModelScope,
+            draftStateFlow = conversationDraftDelegate.state,
+        )
+        conversationMediaPickerDelegate.bind(
+            scope = viewModelScope,
+            conversationIdFlow = conversationIdFlow,
+        )
+        conversationMessagesDelegate.bind(
+            scope = viewModelScope,
+            conversationIdFlow = conversationIdFlow,
+        )
+        conversationMessageSelectionDelegate.bind(
+            scope = viewModelScope,
+            conversationIdFlow = conversationIdFlow,
+        )
+        conversationMetadataDelegate.bind(
+            scope = viewModelScope,
+            conversationIdFlow = conversationIdFlow,
+        )
+        conversationFocusDelegate.bind(
+            scope = viewModelScope,
+            conversationIdFlow = conversationIdFlow,
+        )
+        conversationSubscriptionSelectionDelegate.bind(scope = viewModelScope)
+        bindDelegateStreams()
+    }
+
+    private fun bindDelegateStreams() {
+        viewModelScope.launch(defaultDispatcher) {
+            merge(
+                conversationDraftDelegate.effects,
+                conversationMediaPickerDelegate.effects,
+                conversationMessageSelectionDelegate.effects,
+                conversationMetadataDelegate.effects,
+            ).collect(_effects::emit)
+        }
+        viewModelScope.launch(defaultDispatcher) {
+            merge(
+                conversationMessageSelectionDelegate.navigationEvents,
+                conversationMetadataDelegate.navigationEvents,
+            ).collect(_navigationEvents::emit)
+        }
+    }
+
+    override fun onConversationIdChanged(conversationId: ConversationId?) {
+        if (conversationId != conversationIdFlow.value) {
+            conversationMessageSelectionDelegate.dismissMessageSelection()
+            conversationIdFlow.value = conversationId
+            savedStateHandle[CONVERSATION_ID_KEY] = conversationId?.value
+        }
+    }
+
+    private fun canAddPeople(
+        metadataState: ConversationMetadataUiState,
+    ): Boolean {
+        return when {
+            metadataState !is ConversationMetadataUiState.Present -> false
+            canAddMoreConversationParticipants(metadataState.participantCount) -> true
+            else -> false
+        }
+    }
+
+    private fun canCall(
+        metadataState: ConversationMetadataUiState,
+    ): Boolean {
+        return when {
+            metadataState !is ConversationMetadataUiState.Present -> false
+            metadataState.participantCount != 1 -> false
+            else -> canPlacePhoneCall(metadataState.otherParticipantPhoneNumber)
+        }
+    }
+
+    private fun isAddContactAvailable(
+        metadataState: ConversationMetadataUiState,
+    ): Boolean {
+        return when {
+            metadataState !is ConversationMetadataUiState.Present -> false
+            else -> canAddContact(
+                isGroup = metadataState.participantCount != 1,
+                lookupKey = metadataState.otherParticipantContactLookupKey,
+                destination = metadataState.otherParticipantPhoneNumber,
+            )
+        }
+    }
+
+    override fun onSeedDraft(
+        conversationId: ConversationId,
+        draft: ConversationDraft,
+    ) {
+        conversationDraftDelegate.seedDraft(
+            conversationId = conversationId,
+            draft = draft,
+        )
+    }
+
+    override fun onOpenStartupAttachment(
+        conversationId: ConversationId,
+        startupAttachment: ConversationEntryStartupAttachment,
+    ) {
+        val imageCollectionUri = MessagingContentProvider
+            .buildConversationImagesUri(conversationId.value)
+            ?.toString()
+
+        emitEffect(
+            attachmentPreviewEffect(
+                contentType = startupAttachment.contentType,
+                contentUri = startupAttachment.contentUri,
+                imageCollectionUri = imageCollectionUri,
+            ),
+        )
+    }
+
+    override fun onAttachmentClicked(attachment: ComposerAttachmentUiModel.Resolved) {
+        val imageCollectionUri = conversationIdFlow.value
+            ?.let { MessagingContentProvider.buildDraftImagesUri(it.value) }
+            ?.toString()
+
+        emitEffect(
+            attachmentPreviewEffect(
+                contentType = attachment.contentType,
+                contentUri = attachment.contentUri,
+                imageCollectionUri = imageCollectionUri,
+            ),
+        )
+    }
+
+    override fun onMessageAttachmentClicked(
+        contentType: String,
+        contentUri: String,
+        partId: String,
+    ) {
+        val imageCollectionUri = conversationIdFlow.value
+            ?.let { MessagingContentProvider.buildConversationImagesUri(it.value) }
+            ?.toString()
+
+        val initialPhotoOccurrenceIndex =
+            conversationMessagesDelegate.resolvePhotoViewerInitialOccurrenceIndex(
+                contentType = contentType,
+                partId = partId,
+                contentUri = contentUri,
+            )
+
+        emitEffect(
+            attachmentPreviewEffect(
+                contentType = contentType,
+                contentUri = contentUri,
+                imageCollectionUri = imageCollectionUri,
+                initialPhotoOccurrenceIndex = initialPhotoOccurrenceIndex,
+            ),
+        )
+    }
+
+    override fun onMessageClick(messageId: MessageId) {
+        conversationMessageSelectionDelegate.onMessageClick(messageId = messageId)
+    }
+
+    override fun onMessageAvatarClick(messageId: MessageId) {
+        val message = when (val messagesState = conversationMessagesDelegate.state.value) {
+            is ConversationMessagesUiState.Present -> {
+                messagesState
+                    .messages
+                    .firstOrNull { candidate ->
+                        candidate.messageId == messageId
+                    }
+            }
+
+            else -> null
+        }
+
+        if (message == null) {
+            return
+        }
+
+        val contactAction = resolveContactAction(
+            contactId = message.senderContactId,
+            lookupKey = message.senderContactLookupKey,
+            destination = message.senderNormalizedDestination,
+        )
+
+        when (contactAction) {
+            is ResolveContactActionResult.ShowContactCard -> {
+                emitEffect(
+                    ConversationScreenEffect.ShowParticipantContactCard(
+                        contactId = contactAction.contactId,
+                        contactLookupKey = contactAction.lookupKey,
+                    ),
+                )
+            }
+
+            is ResolveContactActionResult.AddContact -> {
+                emitEffect(
+                    ConversationScreenEffect.AddParticipantContact(
+                        request = AddContactRequest(
+                            destination = contactAction.destination,
+                            avatarUri = message.senderAvatarUri?.toString(),
+                        ),
+                    ),
+                )
+            }
+
+            ResolveContactActionResult.Unavailable -> Unit
+        }
+    }
+
+    override fun onMessageDownloadClick(messageId: MessageId) {
+        conversationMessageSelectionDelegate.onMessageDownloadClick(messageId = messageId)
+    }
+
+    override fun onMessageLongClick(messageId: MessageId) {
+        conversationMessageSelectionDelegate.onMessageLongClick(messageId = messageId)
+    }
+
+    override fun onMessageResendClick(messageId: MessageId) {
+        conversationMessageSelectionDelegate.onMessageResendClick(messageId = messageId)
+    }
+
+    override fun onMessageSelectionActionClick(action: ConversationMessageSelectionAction) {
+        conversationMessageSelectionDelegate.onMessageSelectionActionClick(action = action)
+    }
+
+    override fun onCallClick() {
+        val phoneNumber = (
+            conversationMetadataDelegate.state.value as?
+                ConversationMetadataUiState.Present
+            )
+            ?.otherParticipantPhoneNumber
+            ?.takeIf(canPlacePhoneCall::invoke)
+            ?: return
+
+        emitEffect(
+            ConversationScreenEffect.PlacePhoneCall(
+                phoneNumber = phoneNumber,
+            ),
+        )
+    }
+
+    override fun onSimSelected(selfParticipantId: ParticipantId) {
+        val conversationId = conversationIdFlow.value?.takeIf { it.isNotBlank() } ?: return
+
+        conversationDraftDelegate.onSelfParticipantIdChanged(
+            conversationId = conversationId,
+            selfParticipantId = selfParticipantId,
+        )
+        simSelectionRepository.setSelectedSelfId(
+            conversationId = conversationId,
+            selfId = selfParticipantId,
+        )
+    }
+
+    override fun onExternalUriClicked(uri: String) {
+        emitEffect(
+            ConversationScreenEffect.OpenExternalUri(
+                uri = uri,
+            ),
+        )
+    }
+
+    override fun onPhotoPickerMediaSelected(contentUris: List<String>) {
+        conversationMediaPickerDelegate.onPhotoPickerMediaSelected(contentUris = contentUris)
+    }
+
+    override fun onPhotoPickerMediaDeselected(contentUris: List<String>) {
+        conversationMediaPickerDelegate.onPhotoPickerMediaDeselected(contentUris = contentUris)
+    }
+
+    override fun onContactCardPicked(contactUri: String?) {
+        conversationMediaPickerDelegate.onContactCardPicked(contactUri = contactUri)
+    }
+
+    override fun onMessageTextChanged(text: String) {
+        conversationDraftDelegate.onMessageTextChanged(messageText = text)
+    }
+
+    override fun tryStartAddingAttachment(): Boolean {
+        return conversationDraftDelegate.tryStartAddingAttachment()
+    }
+
+    override fun onAudioRecordingStart(isLocked: Boolean) {
+        startAudioRecording(isLocked = isLocked)
+    }
+
+    private fun startAudioRecording(isLocked: Boolean) {
+        if (!conversationDraftDelegate.tryStartAddingAttachment()) {
+            return
+        }
+
+        val effectiveSelfParticipantId = composerUiState.value
+            .simSelector
+            .selectedSubscription
+            ?.selfParticipantId
+            ?: conversationDraftDelegate.state.value.draft.selfParticipantId
+
+        when {
+            isLocked -> {
+                conversationAudioRecordingDelegate.startLockedRecording(
+                    selfParticipantId = effectiveSelfParticipantId,
+                )
+            }
+
+            else -> {
+                conversationAudioRecordingDelegate.startRecording(
+                    selfParticipantId = effectiveSelfParticipantId,
+                )
+            }
+        }
+    }
+
+    override fun onAudioRecordingLock(): Boolean {
+        return conversationAudioRecordingDelegate.lockRecording()
+    }
+
+    override fun onAudioRecordingFinish() {
+        conversationAudioRecordingDelegate.finishRecording()
+    }
+
+    override fun onAudioRecordingCancel() {
+        conversationAudioRecordingDelegate.cancelRecording()
+    }
+
+    override fun onCapturedMediaReady(capturedMedia: ConversationCapturedMedia) {
+        conversationMediaPickerDelegate.onCapturedMediaReady(capturedMedia = capturedMedia)
+    }
+
+    override fun onRemovePendingAttachment(pendingAttachmentId: String) {
+        conversationMediaPickerDelegate.onRemovePendingAttachment(pendingAttachmentId)
+    }
+
+    override fun onRemoveResolvedAttachment(contentUri: String) {
+        conversationMediaPickerDelegate.onRemoveResolvedAttachment(contentUri = contentUri)
+    }
+
+    override fun onUpdateAttachmentCaption(
+        contentUri: String,
+        captionText: String,
+    ) {
+        conversationDraftDelegate.updateAttachmentCaption(
+            contentUri = contentUri,
+            captionText = captionText,
+        )
+    }
+
+    override fun dismissDeleteMessageConfirmation() {
+        conversationMessageSelectionDelegate.dismissDeleteMessageConfirmation()
+    }
+
+    override fun dismissMessageSelection() {
+        conversationMessageSelectionDelegate.dismissMessageSelection()
+    }
+
+    override fun confirmDeleteSelectedMessages() {
+        conversationMessageSelectionDelegate.confirmDeleteSelectedMessages()
+    }
+
+    override fun onSendClick() {
+        conversationDraftDelegate.onSendClick()
+    }
+
+    override fun dismissAttachmentLimitWarning() {
+        conversationDraftDelegate.dismissAttachmentLimitWarning()
+    }
+
+    override fun sendAnywayAfterAttachmentLimitWarning() {
+        conversationDraftDelegate.sendAnywayAfterAttachmentLimitWarning()
+    }
+
+    override fun onDefaultSmsRolePromptActionClick() {
+        val effect = when (val requestIntent = createDefaultSmsRoleRequest()) {
+            null -> ConversationScreenEffect.ShowMessage(
+                messageResId = R.string.activity_not_found_message,
+            )
+
+            else -> ConversationScreenEffect.LaunchDefaultSmsRoleRequest(
+                intent = requestIntent,
+            )
+        }
+        emitEffect(effect)
+    }
+
+    override fun onDefaultSmsRoleRequestResult(resultCode: Int) {
+        if (handlePendingDefaultSmsRoleRequestResult(resultCode = resultCode)) {
+            return
+        }
+
+        if (resultCode != Activity.RESULT_OK) {
+            return
+        }
+
+        emitEffect(
+            ConversationScreenEffect.ShowMessage(
+                messageResId = R.string.toast_after_setting_default_sms_app,
+            ),
+        )
+    }
+
+    private fun handlePendingDefaultSmsRoleRequestResult(resultCode: Int): Boolean {
+        val didHandleDraftSend = conversationDraftDelegate.onDefaultSmsRoleRequestResult(
+            resultCode = resultCode,
+        )
+
+        if (didHandleDraftSend) {
+            return true
+        }
+
+        return conversationMessageSelectionDelegate.onDefaultSmsRoleRequestResult(
+            resultCode = resultCode,
+        )
+    }
+
+    override fun onDefaultSmsRoleRequestLaunchFailed() {
+        emitEffect(
+            ConversationScreenEffect.ShowMessage(
+                messageResId = R.string.activity_not_found_message,
+            ),
+        )
+    }
+
+    override fun persistDraft() {
+        conversationDraftDelegate.persistDraft()
+    }
+
+    override fun onArchiveConversationClick() {
+        conversationMetadataDelegate.onArchiveConversationClick()
+    }
+
+    override fun onUnarchiveConversationClick() {
+        conversationMetadataDelegate.onUnarchiveConversationClick()
+    }
+
+    override fun onUnblockClick() {
+        conversationMetadataDelegate.onUnblockConversationClick()
+    }
+
+    override fun onAddContactClick() {
+        conversationMetadataDelegate.onAddContactClick()
+    }
+
+    override fun onDeleteConversationClick() {
+        conversationMetadataDelegate.onDeleteConversationClick()
+    }
+
+    override fun confirmDeleteConversation() {
+        conversationMetadataDelegate.confirmDeleteConversation()
+    }
+
+    override fun dismissDeleteConversationConfirmation() {
+        conversationMetadataDelegate.dismissDeleteConversationConfirmation()
+    }
+
+    override fun onShowSubjectFieldClick() {
+        conversationDraftDelegate.showSubjectDialog()
+    }
+
+    override fun onSubjectChipClear() {
+        conversationDraftDelegate.onSubjectTextChanged(subjectText = "")
+    }
+
+    override fun onSubjectDialogConfirm(subjectText: String) {
+        conversationDraftDelegate.confirmSubjectDialog(subjectText = subjectText)
+    }
+
+    override fun onSubjectDialogDismiss() {
+        conversationDraftDelegate.dismissSubjectDialog()
+    }
+
+    override fun onScreenForegrounded(cancelNotification: Boolean) {
+        conversationComposerAttachmentsDelegate.refresh()
+        conversationMessagesDelegate.refresh()
+        conversationFocusDelegate.setScreenFocused(
+            focused = true,
+            cancelNotification = cancelNotification,
+        )
+    }
+
+    override fun onScreenBackgrounded() {
+        conversationFocusDelegate.setScreenFocused(focused = false)
+    }
+
+    override fun onCleared() {
+        conversationFocusDelegate.setScreenFocused(focused = false)
+        conversationAudioRecordingDelegate.onScreenCleared()
+        conversationMediaPickerDelegate.onScreenCleared()
+        conversationDraftDelegate.flushDraft()
+
+        super.onCleared()
+    }
+
+    private fun emitEffect(effect: ConversationScreenEffect) {
+        viewModelScope.launch(defaultDispatcher) {
+            _effects.emit(effect)
+        }
+    }
+
+    private companion object {
+        private const val CONVERSATION_ID_KEY = "conversation_id"
+        private const val STATEFLOW_STOP_TIMEOUT_MILLIS = 5_000L
+    }
+}
+
+private fun attachmentPreviewEffect(
+    contentType: String,
+    contentUri: String,
+    imageCollectionUri: String?,
+    initialPhotoOccurrenceIndex: Int = 0,
+): ConversationScreenEffect {
+    return when {
+        ContentType.isVCardType(contentType) -> {
+            ConversationScreenEffect.NavigateToVCardDetail(uri = contentUri)
+        }
+
+        else -> {
+            ConversationScreenEffect.OpenAttachmentPreview(
+                contentType = contentType,
+                contentUri = contentUri,
+                imageCollectionUri = imageCollectionUri,
+                initialPhotoOccurrenceIndex = initialPhotoOccurrenceIndex,
+            )
+        }
+    }
+}
+
+private data class ConversationScreenDialogUiState(
+    val attachmentLimitWarning: ConversationAttachmentLimitWarning?,
+    val isDeleteConversationConfirmationVisible: Boolean,
+    val isSubjectDialogVisible: Boolean,
+)

@@ -1,0 +1,293 @@
+package com.waxd.messaging.ui.conversationpicker.common
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.unit.dp
+import com.waxd.messaging.R
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.ui.common.components.participant.ParticipantAvatar
+import com.waxd.messaging.ui.common.components.selection.SelectionListItemTokens
+import com.waxd.messaging.ui.common.text.asLtrText
+import com.waxd.messaging.ui.conversationpicker.model.TargetUiState
+import com.waxd.messaging.ui.core.MessagingPreviewColumn
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+
+private val SelectedBarBottomPadding = 8.dp
+private val SelectedChipSpacing = 8.dp
+private val SelectedChipAvatarSize = 56.dp
+private val SelectedChipAvatarFallbackSize = 20.dp
+private val SelectedChipLabelSpacing = 4.dp
+private val SelectedChipLabelHeight = 16.dp
+private val SelectedChipRemoveBadgeSize = 18.dp
+private val SelectedChipRemoveIconSize = 12.dp
+private val SelectedProceedButtonSize = 56.dp
+private val SelectedProceedButtonCornerRadius = 18.dp
+
+private val SelectedBarStartPadding = ScreenContentPadding +
+    SelectionListItemTokens.rowHorizontalPadding +
+    (SelectionListItemTokens.avatarSize - SelectedChipAvatarSize) / 2
+
+private val SelectedBarEndPadding = SelectedBarStartPadding +
+    SelectedProceedButtonSize +
+    SelectedChipSpacing
+
+private val SelectedBarHeight = SelectedChipAvatarSize +
+    SelectedChipLabelSpacing +
+    SelectedChipLabelHeight +
+    SelectedBarBottomPadding
+
+@Composable
+internal fun SelectedTargetsBar(
+    targets: ImmutableList<TargetUiState>,
+    onRemove: (TargetUiState) -> Unit,
+    onProceed: () -> Unit,
+    showProceedButton: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val listState = rememberLazyListState()
+    var previousCount by remember { mutableIntStateOf(targets.size) }
+
+    LaunchedEffect(targets.size) {
+        val shouldScrollToLastItem = targets.size > previousCount
+        previousCount = targets.size
+
+        if (shouldScrollToLastItem) {
+            listState.animateScrollToItem(targets.lastIndex)
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = SelectedBarHeight),
+    ) {
+        LazyRow(
+            state = listState,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(
+                start = SelectedBarStartPadding,
+                end = when {
+                    showProceedButton -> SelectedBarEndPadding
+                    else -> SelectedBarStartPadding
+                },
+                bottom = SelectedBarBottomPadding,
+            ),
+            horizontalArrangement = Arrangement.spacedBy(
+                SelectedChipSpacing,
+            ),
+            verticalAlignment = Alignment.Top,
+        ) {
+            items(
+                items = targets,
+                key = { it.key },
+            ) { target ->
+                SelectedTargetChip(
+                    target = target,
+                    onRemove = { onRemove(target) },
+                    modifier = Modifier.animateItem(),
+                )
+            }
+        }
+
+        if (showProceedButton) {
+            Box(modifier = Modifier.matchParentSize()) {
+                SelectedTargetsProceedButton(
+                    onProceed = onProceed,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.SelectedTargetsProceedButton(
+    onProceed: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight()
+            .width(SelectedBarEndPadding)
+            .background(
+                Brush.horizontalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        MaterialTheme.colorScheme.surfaceContainer,
+                    ),
+                ),
+            ),
+    )
+
+    FilledIconButton(
+        onClick = onProceed,
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(end = SelectedBarStartPadding)
+            .size(SelectedProceedButtonSize),
+        shape = RoundedCornerShape(
+            SelectedProceedButtonCornerRadius,
+        ),
+        colors = IconButtonDefaults.filledIconButtonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+        ),
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Default.ArrowForward,
+            contentDescription = stringResource(R.string.share_selection_next),
+        )
+    }
+}
+
+@Composable
+private fun SelectedTargetChip(
+    target: TargetUiState,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val displayName = target.displayName.asLtrText()
+
+    Column(
+        modifier = modifier.width(SelectedChipAvatarSize),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        SelectedTargetChipAvatar(
+            target = target,
+            displayName = displayName,
+            onRemove = onRemove,
+        )
+
+        Spacer(modifier = Modifier.height(SelectedChipLabelSpacing))
+
+        Text(
+            text = displayName,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = SelectedChipLabelHeight),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun SelectedTargetChipAvatar(
+    target: TargetUiState,
+    displayName: String,
+    onRemove: () -> Unit,
+) {
+    val avatarContent = target.avatarContent()
+
+    Box(modifier = Modifier.size(SelectedChipAvatarSize)) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(CircleShape)
+                .clickable(onClick = onRemove),
+        ) {
+            ParticipantAvatar(
+                avatarUri = target.avatarUri,
+                size = SelectedChipAvatarSize,
+                fallbackLabel = avatarContent.fallbackLabel,
+                colorSeedCode = avatarContent.colorSeedCode,
+                fallbackSize = SelectedChipAvatarFallbackSize,
+                fallbackIcon = avatarContent.fallbackIcon,
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(SelectedChipRemoveBadgeSize)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                .clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = stringResource(
+                    R.string.share_selection_remove,
+                    displayName,
+                ),
+                modifier = Modifier.size(SelectedChipRemoveIconSize),
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+@PreviewLightDark
+@Composable
+private fun SelectedTargetsBarPreview() {
+    MessagingPreviewColumn {
+        SelectedTargetsBar(
+            targets = persistentListOf(
+                TargetUiState.Conversation(
+                    conversationId = ConversationId("1"),
+                    normalizedDestination = "+31612345678",
+                    displayName = "Jane Doe",
+                    details = "+31 6 1234 5678",
+                    avatarUri = null,
+                    isGroup = false,
+                ),
+                TargetUiState.Conversation(
+                    conversationId = ConversationId("2"),
+                    normalizedDestination = null,
+                    displayName = "Project group",
+                    details = null,
+                    avatarUri = null,
+                    isGroup = true,
+                ),
+            ),
+            onRemove = {},
+            onProceed = {},
+            showProceedButton = true,
+        )
+    }
+}

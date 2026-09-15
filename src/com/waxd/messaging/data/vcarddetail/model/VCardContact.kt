@@ -1,0 +1,13 @@
+package com.waxd.messaging.data.vcarddetail.model
+
+import androidx.compose.runtime.Immutable
+import com.waxd.messaging.data.vcard.model.VCardAvatarPhoto
+import kotlinx.collections.immutable.ImmutableList
+
+@Immutable
+internal data class VCardContact(
+    val displayName: String?,
+    val normalizedDestination: String?,
+    val avatarPhoto: VCardAvatarPhoto?,
+    val fields: ImmutableList<VCardField>,
+)

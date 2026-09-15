@@ -1,0 +1,275 @@
+package com.waxd.messaging.ui.conversation.messages.mapper
+
+import com.waxd.messaging.data.conversation.model.ConversationId
+import com.waxd.messaging.data.conversation.model.MessageId
+import com.waxd.messaging.data.conversation.model.ParticipantId
+import com.waxd.messaging.datamodel.data.ConversationMessageData
+import com.waxd.messaging.datamodel.data.MessageData
+import com.waxd.messaging.datamodel.data.MessagePartData
+import com.waxd.messaging.ui.conversation.attachment.mapper.ConversationVCardAttachmentUiModelMapper
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessagePartUiModel
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessageUiModel
+import com.waxd.messaging.ui.conversation.messages.model.message.ConversationMessageUiModel.Status
+import com.waxd.messaging.ui.conversation.messages.model.message.MmsDownloadUiModel
+import com.waxd.messaging.util.ContentType
+import com.waxd.messaging.util.LogUtil
+import com.waxd.messaging.util.OsUtil
+import javax.inject.Inject
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.toImmutableList
+
+internal interface ConversationMessageUiModelMapper {
+    fun map(data: ConversationMessageData): ConversationMessageUiModel?
+}
+
+internal class ConversationMessageUiModelMapperImpl @Inject constructor(
+    private val conversationVCardAttachmentUiModelMapper: ConversationVCardAttachmentUiModelMapper,
+) : ConversationMessageUiModelMapper {
+
+    override fun map(data: ConversationMessageData): ConversationMessageUiModel? {
+        val messageId = MessageId.fromOrNull(data.messageId)
+        val conversationId = ConversationId.fromOrNull(data.conversationId)
+
+        if (messageId == null || conversationId == null) {
+            LogUtil.e(LOG_TAG, "Dropping conversation message with missing ids")
+            return null
+        }
+
+        return ConversationMessageUiModel(
+            messageId = messageId,
+            conversationId = conversationId,
+            text = data.text,
+            parts = data
+                .parts
+                ?.asSequence()
+                ?.map(::mapPart)
+                ?.toImmutableList()
+                ?: persistentListOf(),
+            sentTimestamp = data.sentTimeStamp,
+            receivedTimestamp = data.receivedTimeStamp,
+            displayTimestamp = conversationMessageDisplayTimestamp(
+                sentTimestamp = data.sentTimeStamp,
+                receivedTimestamp = data.receivedTimeStamp,
+            ),
+            status = mapStatus(data.status),
+            isIncoming = data.isIncoming,
+            senderDisplayName = data.senderDisplayName,
+            senderAvatarUri = data.senderProfilePhotoUri,
+            senderContactId = data.senderContactId,
+            senderContactLookupKey = data.senderContactLookupKey,
+            senderNormalizedDestination = data.senderNormalizedDestination
+                ?.takeIf { it.isNotBlank() },
+            senderParticipantId = ParticipantId.fromOrNull(data.participantId),
+            selfParticipantId = ParticipantId.fromOrNull(data.selfParticipantId),
+            canClusterWithPrevious = data.canClusterWithPreviousMessage,
+            canClusterWithNext = data.canClusterWithNextMessage,
+            canCopyMessageToClipboard = data.canCopyMessageToClipboard,
+            canDownloadMessage = data.showDownloadMessage,
+            canForwardMessage = data.canForwardMessage,
+            canResendMessage = data.showResendMessage,
+            canSaveAttachments = canSaveAttachments(data),
+            mmsDownload = mapMmsDownload(data = data),
+            mmsSubject = data.mmsSubject,
+            protocol = mapProtocol(data),
+        )
+    }
+
+    private fun mapMmsDownload(data: ConversationMessageData): MmsDownloadUiModel? {
+        val state = when (data.status) {
+            MessageData.BUGLE_STATUS_INCOMING_YET_TO_MANUAL_DOWNLOAD -> {
+                MmsDownloadUiModel.State.AwaitingManualDownload
+            }
+
+            MessageData.BUGLE_STATUS_INCOMING_AUTO_DOWNLOADING,
+            MessageData.BUGLE_STATUS_INCOMING_MANUAL_DOWNLOADING,
+            MessageData.BUGLE_STATUS_INCOMING_RETRYING_AUTO_DOWNLOAD,
+            MessageData.BUGLE_STATUS_INCOMING_RETRYING_MANUAL_DOWNLOAD,
+            -> {
+                MmsDownloadUiModel.State.Downloading
+            }
+
+            MessageData.BUGLE_STATUS_INCOMING_DOWNLOAD_FAILED -> {
+                MmsDownloadUiModel.State.DownloadFailed
+            }
+
+            MessageData.BUGLE_STATUS_INCOMING_EXPIRED_OR_NOT_AVAILABLE -> {
+                MmsDownloadUiModel.State.ExpiredOrUnavailable
+            }
+
+            else -> null
+        }
+
+        return state?.let {
+            MmsDownloadUiModel(
+                state = state,
+                sizeBytes = data.smsMessageSize.toLong(),
+                expiryTimestamp = data.mmsExpiry,
+                isSecondaryUser = OsUtil.isSecondaryUser(),
+            )
+        }
+    }
+
+    private fun canSaveAttachments(data: ConversationMessageData): Boolean {
+        return when (val parts = data.parts) {
+            null -> false
+
+            else -> {
+                parts.any { part ->
+                    !part.contentType.isNullOrBlank() &&
+                        part.contentUri != null &&
+                        !ContentType.isTextType(part.contentType)
+                }
+            }
+        }
+    }
+
+    private fun mapPart(part: MessagePartData): ConversationMessagePartUiModel {
+        val contentType = part.contentType ?: ""
+
+        return when {
+            ContentType.isTextType(contentType) -> {
+                ConversationMessagePartUiModel.Text(
+                    text = part.text.orEmpty(),
+                )
+            }
+
+            else -> mapAttachmentPart(
+                part = part,
+                contentType = contentType,
+            )
+        }
+    }
+
+    private fun mapAttachmentPart(
+        part: MessagePartData,
+        contentType: String,
+    ): ConversationMessagePartUiModel.Attachment {
+        val partId = part.partId.orEmpty()
+
+        return when {
+            ContentType.isAudioType(contentType) -> {
+                ConversationMessagePartUiModel.Attachment.Audio(
+                    text = part.text,
+                    contentType = contentType,
+                    contentUri = part.contentUri,
+                    width = part.width,
+                    height = part.height,
+                    partId = partId,
+                )
+            }
+
+            ContentType.isImageType(contentType) -> {
+                ConversationMessagePartUiModel.Attachment.Image(
+                    text = part.text,
+                    contentType = contentType,
+                    contentUri = part.contentUri,
+                    width = part.width,
+                    height = part.height,
+                    partId = partId,
+                )
+            }
+
+            ContentType.isVCardType(contentType) -> {
+                ConversationMessagePartUiModel.Attachment.VCard(
+                    text = part.text,
+                    contentType = contentType,
+                    contentUri = part.contentUri,
+                    width = part.width,
+                    height = part.height,
+                    vCardUiModel = conversationVCardAttachmentUiModelMapper.map(
+                        metadata = null,
+                    ),
+                    partId = partId,
+                )
+            }
+
+            ContentType.isVideoType(contentType) -> {
+                ConversationMessagePartUiModel.Attachment.Video(
+                    text = part.text,
+                    contentType = contentType,
+                    contentUri = part.contentUri,
+                    width = part.width,
+                    height = part.height,
+                    partId = partId,
+                )
+            }
+
+            else -> {
+                ConversationMessagePartUiModel.Attachment.File(
+                    text = part.text,
+                    contentType = contentType,
+                    contentUri = part.contentUri,
+                    width = part.width,
+                    height = part.height,
+                    partId = partId,
+                )
+            }
+        }
+    }
+
+    @Suppress("CyclomaticComplexMethod")
+    private fun mapStatus(javaStatus: Int): Status {
+        return when (javaStatus) {
+            MessageData.BUGLE_STATUS_UNKNOWN -> Status.Unknown
+
+            MessageData.BUGLE_STATUS_OUTGOING_COMPLETE -> Status.Outgoing.Complete
+            MessageData.BUGLE_STATUS_OUTGOING_DELIVERED -> Status.Outgoing.Delivered
+            MessageData.BUGLE_STATUS_OUTGOING_DRAFT -> Status.Outgoing.Draft
+            MessageData.BUGLE_STATUS_OUTGOING_YET_TO_SEND -> Status.Outgoing.YetToSend
+            MessageData.BUGLE_STATUS_OUTGOING_SENDING -> Status.Outgoing.Sending
+            MessageData.BUGLE_STATUS_OUTGOING_RESENDING -> Status.Outgoing.Resending
+            MessageData.BUGLE_STATUS_OUTGOING_AWAITING_RETRY -> Status.Outgoing.AwaitingRetry
+            MessageData.BUGLE_STATUS_OUTGOING_FAILED -> Status.Outgoing.Failed
+            MessageData.BUGLE_STATUS_OUTGOING_FAILED_EMERGENCY_NUMBER ->
+                Status.Outgoing.FailedEmergencyNumber
+
+            MessageData.BUGLE_STATUS_INCOMING_COMPLETE -> Status.Incoming.Complete
+            MessageData.BUGLE_STATUS_INCOMING_YET_TO_MANUAL_DOWNLOAD ->
+                Status.Incoming.YetToManualDownload
+
+            MessageData.BUGLE_STATUS_INCOMING_RETRYING_MANUAL_DOWNLOAD ->
+                Status.Incoming.RetryingManualDownload
+
+            MessageData.BUGLE_STATUS_INCOMING_MANUAL_DOWNLOADING ->
+                Status.Incoming.ManualDownloading
+
+            MessageData.BUGLE_STATUS_INCOMING_RETRYING_AUTO_DOWNLOAD ->
+                Status.Incoming.RetryingAutoDownload
+
+            MessageData.BUGLE_STATUS_INCOMING_AUTO_DOWNLOADING -> Status.Incoming.AutoDownloading
+            MessageData.BUGLE_STATUS_INCOMING_DOWNLOAD_FAILED -> Status.Incoming.DownloadFailed
+
+            MessageData.BUGLE_STATUS_INCOMING_EXPIRED_OR_NOT_AVAILABLE ->
+                Status.Incoming.ExpiredOrNotAvailable
+
+            else -> {
+                LogUtil.e(LOG_TAG, "mapStatus: unexpected value=$javaStatus")
+
+                Status.Unknown
+            }
+        }
+    }
+
+    private fun mapProtocol(data: ConversationMessageData): ConversationMessageUiModel.Protocol {
+        return when {
+            data.isSms -> ConversationMessageUiModel.Protocol.SMS
+            data.isMmsNotification -> ConversationMessageUiModel.Protocol.MMS_PUSH_NOTIFICATION
+            data.isMms -> ConversationMessageUiModel.Protocol.MMS
+            else -> ConversationMessageUiModel.Protocol.UNKNOWN
+        }
+    }
+
+    private fun conversationMessageDisplayTimestamp(
+        sentTimestamp: Long,
+        receivedTimestamp: Long,
+    ): Long {
+        return when {
+            receivedTimestamp > 0L -> receivedTimestamp
+            else -> sentTimestamp
+        }
+    }
+
+    private companion object {
+        private const val LOG_TAG = "ConversationMessageUiModelMapper"
+    }
+}

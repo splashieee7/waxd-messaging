@@ -1,0 +1,394 @@
+/*
+ * Copyright (C) 2015 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.waxd.messaging.ui;
+
+import android.app.Activity;
+import android.app.PendingIntent;
+import android.appwidget.AppWidgetManager;
+import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ComponentName;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.Point;
+import android.net.Uri;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.telephony.TelephonyManager;
+import android.text.TextUtils;
+
+import com.waxd.messaging.R;
+import com.waxd.messaging.datamodel.MediaScratchFileProvider;
+import com.waxd.messaging.datamodel.MessagingContentProvider;
+import com.waxd.messaging.datamodel.NoConfirmationSmsSendService;
+import com.waxd.messaging.datamodel.data.MessageData;
+import com.waxd.messaging.datamodel.data.MessagePartData;
+import com.waxd.messaging.receiver.ConversationReadReceiver;
+import com.waxd.messaging.receiver.NotificationReceiver;
+import com.waxd.messaging.ui.classzero.ClassZeroActivity;
+import com.waxd.messaging.ui.conversation.ConversationActivity;
+import com.waxd.messaging.ui.conversation.LaunchConversationActivity;
+import com.waxd.messaging.ui.conversationpicker.host.widget.WidgetPickConversationActivity;
+import com.waxd.messaging.ui.debug.DebugMmsConfigActivity;
+import com.waxd.messaging.util.Assert;
+import com.waxd.messaging.util.ContentType;
+import com.waxd.messaging.util.ConversationIdSet;
+import com.waxd.messaging.util.LogUtil;
+import com.waxd.messaging.util.UiUtils;
+import com.waxd.messaging.util.UriUtil;
+
+import androidx.core.app.TaskStackBuilder;
+
+/**
+ * A central repository of Intents used to start activities.
+ */
+public class UIIntentsImpl extends UIIntents {
+    private static final String CELL_BROADCAST_LIST_ACTIVITY =
+            "com.android.cellbroadcastreceiver.CellBroadcastListActivity";
+    private static final String CALL_TARGET_CLICK_KEY = "touchPoint";
+    private static final String CALL_TARGET_CLICK_EXTRA_KEY =
+            "android.telecom.extra.OUTGOING_CALL_EXTRAS";
+    private static final int MUTABLE_PENDING_INTENT_FLAGS =
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE;
+
+    /**
+     * Get an intent which takes you to a conversation
+     */
+    private Intent getConversationActivityIntent(final Context context,
+            final String conversationId, final MessageData draft,
+            final boolean withCustomTransition) {
+        final Intent intent = new Intent(context, MainActivity.class);
+
+        // Always try to reuse the same MainActivity in the current task so that we don't
+        // have two conversation hosts in the back stack.
+        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+
+        // Otherwise we're starting a new conversation
+        if (conversationId != null) {
+            intent.putExtra(UI_INTENT_EXTRA_CONVERSATION_ID, conversationId);
+        }
+        if (draft != null) {
+            intent.putExtra(UI_INTENT_EXTRA_DRAFT_DATA, draft);
+
+            // If draft attachments came from an external content provider via a share intent, we
+            // need to propagate the URI permissions through to MainActivity. This requires
+            // putting the URIs into the ClipData (setData also works, but accepts only one URI).
+            ClipData clipData = null;
+            for (final MessagePartData partData : draft.getParts()) {
+                if (partData.isAttachment()) {
+                    final Uri uri = partData.getContentUri();
+                    if (clipData == null) {
+                        clipData = ClipData.newRawUri("Attachments", uri);
+                    } else {
+                        clipData.addItem(new ClipData.Item(uri));
+                    }
+                }
+            }
+            if (clipData != null) {
+                intent.setClipData(clipData);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            }
+        }
+        if (withCustomTransition) {
+            intent.putExtra(UI_INTENT_EXTRA_WITH_CUSTOM_TRANSITION, true);
+        }
+
+        if (!(context instanceof Activity)) {
+            // If the caller supplies an application context, and not an activity context, we must
+            // include this flag
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
+        return intent;
+    }
+
+    /**
+     * Get an intent which takes you to the conversation list
+     */
+    private Intent getConversationListActivityIntent(final Context context) {
+        return new Intent(context, MainActivity.class);
+    }
+
+    @Override
+    public void launchConversationListActivity(final Context context) {
+        final Intent intent = getConversationListActivityIntent(context);
+        context.startActivity(intent);
+    }
+
+    @Override
+    public void launchConversationActivity(final Context context,
+            final String conversationId, final MessageData draft, final Bundle activityOptions,
+            final boolean withCustomTransition) {
+        Assert.isTrue(!withCustomTransition || activityOptions != null);
+        final Intent intent = getConversationActivityIntent(context, conversationId, draft,
+                withCustomTransition);
+        context.startActivity(intent, activityOptions);
+    }
+
+    @Override
+    public void launchConversationActivityWithParentStack(final Context context,
+                final String conversationId, final String smsBody) {
+        final MessageData messageData = TextUtils.isEmpty(smsBody)
+                ? null
+                : MessageData.createDraftSmsMessage(conversationId, null, smsBody);
+        TaskStackBuilder.create(context)
+                .addNextIntentWithParentStack(
+                        getConversationActivityIntent(context, conversationId, messageData,
+                                false /* withCustomTransition */))
+                .startActivities();
+    }
+
+    @Override
+    public void launchDebugMmsConfigActivity(final Context context) {
+        context.startActivity(new Intent(context, DebugMmsConfigActivity.class));
+    }
+
+    @Override
+    public void launchPhoneCallActivity(final Context context, final String phoneNumber,
+                                        final Point clickPosition) {
+        final Intent intent = new Intent(Intent.ACTION_CALL,
+                Uri.parse(UriUtil.SCHEME_TEL + phoneNumber));
+        final Bundle extras = new Bundle();
+        extras.putParcelable(CALL_TARGET_CLICK_KEY, clickPosition);
+        intent.putExtra(CALL_TARGET_CLICK_EXTRA_KEY, extras);
+        startExternalActivity(context, intent);
+    }
+
+    @Override
+    public void launchClassZeroActivity(final Context context, final ContentValues messageValues) {
+        final Intent classZeroIntent = new Intent(context, ClassZeroActivity.class)
+                .putExtra(UI_INTENT_EXTRA_MESSAGE_VALUES, messageValues)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        context.startActivity(classZeroIntent);
+    }
+
+    @Override
+    public void launchSaveVCardToContactsActivity(final Context context, final Uri vcardUri) {
+        Assert.isTrue(MediaScratchFileProvider.isMediaScratchSpaceUri(vcardUri));
+        final Intent intent = new Intent();
+        intent.setAction(Intent.ACTION_VIEW);
+        intent.setDataAndType(vcardUri, ContentType.TEXT_VCARD.toLowerCase());
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startExternalActivity(context, intent);
+    }
+
+    @Override
+    public void launchFullScreenVideoViewer(final Context context, final Uri videoUri) {
+        final Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        // So we don't see "surrounding" images in Gallery
+        intent.putExtra("SingleItemOnly", true);
+        intent.setDataAndType(videoUri, ContentType.VIDEO_UNSPECIFIED);
+        startExternalActivity(context, intent);
+    }
+
+    @Override
+    public PendingIntent getPendingIntentForConversationListActivity(final Context context) {
+        final Intent intent = getConversationListActivityIntent(context);
+        return getPendingIntentWithParentStack(context, intent, 0);
+    }
+
+    @Override
+    public PendingIntent getPendingIntentForConversationActivity(final Context context,
+            final String conversationId, final MessageData draft) {
+        final Intent intent = getConversationActivityIntent(context, conversationId, draft,
+                false /* withCustomTransition */);
+        // Ensure that the platform doesn't reuse PendingIntents across conversations
+        intent.setData(MessagingContentProvider.buildConversationMetadataUri(conversationId));
+        return getPendingIntentWithParentStack(context, intent, 0);
+    }
+
+    @Override
+    public Intent getShortcutIntentForConversationActivity(final Context context,
+                                                           final String conversationId) {
+        // Bubbles render the shortcut's own intent target, so this stays on the embeddable
+        // ConversationActivity: retargeting it breaks shortcuts already pushed to devices.
+        final Intent intent = new Intent(context, ConversationActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra(UI_INTENT_EXTRA_CONVERSATION_ID, conversationId);
+        intent.setData(MessagingContentProvider.buildConversationMetadataUri(conversationId));
+        intent.setAction(Intent.ACTION_VIEW);
+        return intent;
+    }
+
+    @Override
+    public Intent getIntentForConversationActivity(final Context context,
+            final String conversationId, final MessageData draft) {
+        final Intent intent = getConversationActivityIntent(context, conversationId, draft,
+                false /* withCustomTransition */);
+        return intent;
+    }
+
+    @Override
+    public PendingIntent getPendingIntentForSendingMessageToConversation(final Context context,
+            final String conversationId, final String selfId, final boolean requiresMms,
+            final int requestCode) {
+        final Intent intent = new Intent(context, NoConfirmationSmsSendService.class);
+        intent.setAction(TelephonyManager.ACTION_RESPOND_VIA_MESSAGE);
+        // Ensure that the platform doesn't reuse PendingIntents across conversations
+        intent.setData(MessagingContentProvider.buildConversationMetadataUri(conversationId));
+        intent.putExtra(UIIntents.UI_INTENT_EXTRA_CONVERSATION_ID, conversationId);
+        intent.putExtra(UIIntents.UI_INTENT_EXTRA_SELF_ID, selfId);
+        intent.putExtra(UIIntents.UI_INTENT_EXTRA_REQUIRES_MMS, requiresMms);
+        return PendingIntent.getService(context, requestCode, intent, MUTABLE_PENDING_INTENT_FLAGS);
+    }
+
+    @Override
+    public PendingIntent getPendingIntentForClearingNotifications(final Context context,
+            final int updateTargets, final ConversationIdSet conversationIdSet,
+            final int requestCode) {
+        final Intent intent = new Intent(context, NotificationReceiver.class);
+        intent.setAction(ACTION_RESET_NOTIFICATIONS);
+        intent.putExtra(UI_INTENT_EXTRA_NOTIFICATIONS_UPDATE, updateTargets);
+        if (conversationIdSet != null) {
+            intent.putExtra(UI_INTENT_EXTRA_CONVERSATION_ID_SET,
+                    conversationIdSet.getDelimitedString());
+            // Ensure that the platform doesn't reuse PendingIntents across conversations: the id
+            // set only lives in an extra, which filterEquals() ignores
+            intent.setData(MessagingContentProvider.buildConversationMetadataUri(
+                    conversationIdSet.first()));
+        }
+
+        return PendingIntent.getBroadcast(context,
+                requestCode, intent,
+                PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    /**
+     * Gets a PendingIntent associated with an Intent to start an Activity. All notifications
+     * that starts an Activity must use this method to get a PendingIntent, which achieves two
+     * goals:
+     * 1. The target activities will be created, with any existing ones destroyed. This ensures
+     *    we don't end up with multiple instances of ConversationListActivity, for example.
+     * 2. The target activity, when launched, will have its backstack correctly constructed so
+     *    back navigation will work correctly.
+     */
+    private static PendingIntent getPendingIntentWithParentStack(final Context context,
+            final Intent intent, final int requestCode) {
+        final TaskStackBuilder stackBuilder = TaskStackBuilder.create(context);
+        // Adds the back stack for the Intent (plus the Intent itself)
+        stackBuilder.addNextIntentWithParentStack(intent);
+        final PendingIntent resultPendingIntent =
+            stackBuilder.getPendingIntent(requestCode, MUTABLE_PENDING_INTENT_FLAGS);
+        return resultPendingIntent;
+    }
+
+    @Override
+    public PendingIntent getPendingIntentForLowStorageNotifications(final Context context) {
+        final Intent storageSettingsIntent = new Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS);
+        if (storageSettingsIntent.resolveActivity(context.getPackageManager()) == null) {
+            storageSettingsIntent.setAction(Settings.ACTION_SETTINGS);
+        }
+        return PendingIntent.getActivity(
+                context,
+                0,
+                storageSettingsIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    @Override
+    public PendingIntent getPendingIntentForSecondaryUserNewMessageNotification(
+            final Context context) {
+        return getPendingIntentForConversationListActivity(context);
+    }
+
+    @Override
+    public Intent getWirelessAlertsIntent() {
+        final Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.setComponent(new ComponentName(CMAS_COMPONENT, CELL_BROADCAST_LIST_ACTIVITY));
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        return intent;
+    }
+
+    @Override
+    public void launchBrowserForUrl(final Context context, final String url) {
+        final Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+        startExternalActivity(context, intent);
+    }
+
+    /**
+     * Provides a safe way to handle external activities which may not exist.
+     */
+    private void startExternalActivity(final Context context, final Intent intent) {
+        try {
+            context.startActivity(intent);
+        } catch (final ActivityNotFoundException ex) {
+            LogUtil.w(LogUtil.BUGLE_TAG, "Couldn't find activity:", ex);
+            UiUtils.showToastAtBottom(R.string.activity_not_found_message);
+        }
+    }
+
+    @Override
+    public Intent getLaunchConversationActivityIntent(final Context context) {
+        final Intent intent = new Intent(context, LaunchConversationActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NO_HISTORY);
+        return intent;
+    }
+
+    @Override
+    public PendingIntent getWidgetPendingIntentForConversationActivity(final Context context,
+            final String conversationId, final int requestCode) {
+        final Intent intent = getConversationActivityIntent(context, null, null,
+                false /* withCustomTransition */);
+        if (conversationId != null) {
+            intent.putExtra(UI_INTENT_EXTRA_CONVERSATION_ID, conversationId);
+
+            // Set the action to something unique to this conversation so if someone calls this
+            // function again on a different conversation, they'll get a new PendingIntent instead
+            // of the old one.
+            intent.setAction(ACTION_WIDGET_CONVERSATION + conversationId);
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        return getPendingIntentWithParentStack(context, intent, requestCode);
+    }
+
+    @Override
+    public PendingIntent getWidgetPendingIntentForNewConversation(final Context context,
+            final int requestCode) {
+        final Intent intent = getConversationActivityIntent(context, null, null, false);
+        intent.putExtra(UI_INTENT_EXTRA_COMPOSE_NEW_CONVERSATION, true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        return getPendingIntentWithParentStack(context, intent, requestCode);
+    }
+
+    @Override
+    public PendingIntent getWidgetPendingIntentForConversationListActivity(
+            final Context context) {
+        final Intent intent = getConversationListActivityIntent(context);
+        return getPendingIntentWithParentStack(context, intent, 0);
+    }
+
+    @Override
+    public PendingIntent getWidgetPendingIntentForConfigurationActivity(final Context context,
+            final int appWidgetId) {
+        final Intent configureIntent = new Intent(context, WidgetPickConversationActivity.class);
+        configureIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
+        configureIntent.setAction(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE);
+        configureIntent.setData(Uri.parse(configureIntent.toUri(Intent.URI_INTENT_SCHEME)));
+        configureIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_HISTORY);
+        return getPendingIntentWithParentStack(context, configureIntent, 0);
+    }
+
+    @Override
+    public PendingIntent getPendingIntentForMarkingAsRead(Context context, String conversationId) {
+        final Intent intent = new Intent(context, ConversationReadReceiver.class);
+        intent.setAction(ACTION_MESSAGE_READ);
+        intent.putExtra(UI_INTENT_EXTRA_CONVERSATION_ID, conversationId);
+        intent.setIdentifier(conversationId);
+        return PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_IMMUTABLE);
+    }
+}
